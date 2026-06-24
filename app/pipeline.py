@@ -113,8 +113,10 @@ def run_variant_pipeline(case_id: int):
         # We must add the ANN info field header if writing output
         vcf_writer = cyvcf2.Writer(filtered_impact_out, vcf_reader)
         
+        total_count = 0
         passing_impact_count = 0
         for record in vcf_reader:
+            total_count += 1
             ann_field = record.INFO.get("ANN")
             score, impact, _, _, _, _ = parse_highest_impact_ann(ann_field)
             
@@ -192,6 +194,9 @@ def run_variant_pipeline(case_id: int):
 
         # Save results back to database
         case.filtered_variants = json.dumps(surviving_variants)
+        case.total_input_variants = total_count
+        case.passed_impact_variants = passing_impact_count
+        case.passed_af_variants = len(surviving_variants)
         case.status = "Completed"
         case.status_message = f"Analysis completed successfully. Found {len(surviving_variants)} candidate variants."
         db.commit()

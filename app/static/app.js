@@ -262,7 +262,7 @@ async function fetchCases() {
                 } else if (c.status === "Processing") {
                     actionButton = `<button disabled class="btn btn-secondary btn-sm" style="cursor: not-allowed; opacity: 0.7;">Processing...</button>`;
                 } else if (c.status === "Completed") {
-                    actionButton = `<button onclick="viewVariants(${c.id}, '${escapeHtml(c.patient_name)}', ${c.patient_age}, '${c.patient_sex}', '${escapeHtml(c.indication_name)}', '${c.indication_doid}')" class="btn btn-secondary btn-sm" style="border-color: var(--color-primary); color: var(--color-primary);">Review Variants</button>`;
+                    actionButton = `<button onclick="viewVariants(${c.id})" class="btn btn-secondary btn-sm" style="border-color: var(--color-primary); color: var(--color-primary);">Review Variants</button>`;
                 }
 
                 const statusTitle = c.status_message ? escapeHtml(c.status_message) : c.status;
@@ -760,7 +760,7 @@ function startPolling() {
                     } else if (c.status === "Processing") {
                         actionButton = `<button disabled class="btn btn-secondary btn-sm" style="cursor: not-allowed; opacity: 0.7;">Processing...</button>`;
                     } else if (c.status === "Completed") {
-                        actionButton = `<button onclick="viewVariants(${c.id}, '${escapeHtml(c.patient_name)}', ${c.patient_age}, '${c.patient_sex}', '${escapeHtml(c.indication_name)}', '${c.indication_doid}')" class="btn btn-secondary btn-sm" style="border-color: var(--color-primary); color: var(--color-primary);">Review Variants</button>`;
+                        actionButton = `<button onclick="viewVariants(${c.id})" class="btn btn-secondary btn-sm" style="border-color: var(--color-primary); color: var(--color-primary);">Review Variants</button>`;
                     }
 
                     const statusTitle = c.status_message ? escapeHtml(c.status_message) : c.status;
@@ -835,38 +835,8 @@ async function processCase(caseId) {
 
 // --- VARIANT REVIEW CONTROLLERS ---
 
-async function viewVariants(caseId, patientName, patientAge, patientSex, indicationName, indicationDoid) {
-    activeReviewCaseId = caseId;
-    currentCaseData = { patientName, patientAge, patientSex, indicationName, indicationDoid };
-    
-    // Reset selections
-    selectedVariantsSet.clear();
-    document.getElementById("select-all-variants").checked = false;
-    updateProceedButton();
-
-    // Update Header Info
-    document.getElementById("review-case-title").textContent = 
-        `CASE-${caseId.toString().padStart(4, '0')}: ${patientName} (Age ${patientAge}, ${patientSex}) • ${indicationName} (${indicationDoid})`;
-
-    const tableBody = document.getElementById("variants-table-body");
-    tableBody.innerHTML = `<tr><td colspan="9" class="table-placeholder">Fetching annotated variants list...</td></tr>`;
-    
-    document.getElementById("review-error").classList.add("hidden");
-    document.getElementById("review-success").classList.add("hidden");
-    document.getElementById("variant-review-container").classList.remove("hidden");
-
-    try {
-        const response = await fetch(`/api/cases/${caseId}/variants`);
-        if (response.ok) {
-            const variants = await response.json();
-            renderVariantReviewTable(variants);
-        } else {
-            const data = await response.json();
-            tableBody.innerHTML = `<tr><td colspan="9" class="table-placeholder alert-danger">${data.detail || "Failed to load variants."}</td></tr>`;
-        }
-    } catch (err) {
-        tableBody.innerHTML = `<tr><td colspan="9" class="table-placeholder alert-danger">Network error connecting to variants server.</td></tr>`;
-    }
+function viewVariants(caseId) {
+    window.open(`/cases/${caseId}/review`, '_blank');
 }
 
 function renderVariantReviewTable(variants) {

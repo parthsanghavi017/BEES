@@ -150,6 +150,20 @@ def list_cases(
     cases = db.query(ClinicalCase).all()
     return cases
 
+@app.get("/api/cases/{case_id}", response_model=ClinicalCaseResponse)
+def get_case(
+    case_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieves details for a single clinical case record.
+    """
+    case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Clinical case not found")
+    return case
+
 @app.post("/api/cases", response_model=ClinicalCaseResponse)
 def create_case(
     patient_name: str = Form(...),
@@ -416,3 +430,13 @@ def serve_index():
     if os.path.exists(index_file):
         return FileResponse(index_file)
     return HTTPException(status_code=404, detail="Index HTML not found.")
+
+@app.get("/cases/{case_id}/review")
+def serve_review_page(case_id: int):
+    """
+    Serves the dedicated clinical variant review page in a separate tab.
+    """
+    review_file = os.path.join(STATIC_DIR, "review.html")
+    if os.path.exists(review_file):
+        return FileResponse(review_file)
+    return HTTPException(status_code=404, detail="Review HTML file not found.")

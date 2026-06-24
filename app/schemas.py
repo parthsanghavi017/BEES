@@ -81,6 +81,9 @@ class ClinicalCaseResponse(BaseModel):
     is_archived: bool
     status: str
     status_message: Optional[str] = None
+    total_input_variants: Optional[int] = None
+    passed_impact_variants: Optional[int] = None
+    passed_af_variants: Optional[int] = None
 
     class Config:
         orm_mode = True

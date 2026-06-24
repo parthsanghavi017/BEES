@@ -52,6 +52,9 @@ class ClinicalCase(Base):
     status = Column(String, default="Pending", nullable=False)  # Pending, Processing, Completed, Failed
     status_message = Column(String, nullable=True)  # Error details if failed
     filtered_variants = Column(String, nullable=True)  # Serialized JSON of surviving variants
+    total_input_variants = Column(Integer, nullable=True)
+    passed_impact_variants = Column(Integer, nullable=True)
+    passed_af_variants = Column(Integer, nullable=True)
 
 def init_db():
     """

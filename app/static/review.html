@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BEES - Genomic Variant Review</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <style>
+        /* Dedicated review page page layouts */
+        .review-container {
+            display: grid;
+            grid-template-columns: 360px 1fr;
+            min-height: 100vh;
+            background-color: var(--bg-main);
+        }
+        
+        .review-sidebar {
+            background-color: #0e1626;
+            border-right: 1px solid var(--border-color);
+            padding: 30px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+            overflow-y: auto;
+            max-height: 100vh;
+        }
+        
+        .review-main {
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+            max-height: 100vh;
+            overflow-y: auto;
+        }
+
+        .review-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 20px;
+        }
+
+        /* Funnel chart styles */
+        .funnel-container {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            margin-top: 10px;
+        }
+
+        .funnel-stage {
+            position: relative;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 14px;
+            transition: var(--transition-smooth);
+            overflow: hidden;
+        }
+
+        .funnel-stage::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            width: 4px;
+            background: var(--gradient-accent);
+        }
+
+        .funnel-stage:hover {
+            transform: translateX(4px);
+            border-color: rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .funnel-progress-bar {
+            height: 6px;
+            background: var(--gradient-accent);
+            border-radius: 3px;
+            margin-top: 8px;
+            transition: width 1s ease-in-out;
+            box-shadow: 0 0 8px rgba(6, 182, 212, 0.3);
+        }
+
+        .funnel-header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+        }
+
+        .funnel-stage-title {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .funnel-stage-val {
+            font-family: monospace;
+            font-weight: bold;
+            color: var(--color-secondary);
+            font-size: 1.1rem;
+        }
+
+        .funnel-discard {
+            font-size: 0.75rem;
+            color: var(--color-danger);
+            margin-top: 4px;
+            display: block;
+        }
+
+        /* Sortable column headers */
+        .sortable {
+            cursor: pointer;
+            user-select: none;
+            transition: var(--transition-smooth);
+            position: relative;
+            padding-right: 20px !important;
+        }
+
+        .sortable:hover {
+            background-color: rgba(255, 255, 255, 0.05) !important;
+            color: var(--text-primary) !important;
+        }
+
+        .sort-icon {
+            display: inline-block;
+            margin-left: 6px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .sort-icon.active {
+            color: var(--color-secondary);
+        }
+
+        .meta-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .meta-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+        }
+
+        .meta-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .meta-val {
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .review-sidebar h3 {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            letter-spacing: 0.05em;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 8px;
+            margin-bottom: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app" class="review-container">
+        <!-- SIDEBAR: PATIENT METADATA & FILTRATION FUNNEL -->
+        <aside class="review-sidebar">
+            <div class="brand" style="margin-bottom: 20px;">
+                <span class="brand-logo" style="font-size: 2.2rem;">🐝</span>
+                <h2 style="font-size: 1.4rem;">BEES Pipeline</h2>
+                <p class="brand-tagline">Clinical Variant Review</p>
+            </div>
+
+            <!-- Case Metadata Panel -->
+            <div>
+                <h3>Case Metadata</h3>
+                <div class="meta-list">
+                    <div class="meta-item">
+                        <span class="meta-label">Case ID</span>
+                        <span class="meta-val" id="case-id-display">CASE-0000</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Patient Name</span>
+                        <span class="meta-val" id="patient-name-display">Loading...</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Demographics</span>
+                        <span class="meta-val" id="demog-display">Age -- • --</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Clinical Indication</span>
+                        <span class="meta-val" id="indication-display">Loading...</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Transcript Reference</span>
+                        <span class="meta-val"><span id="transcript-display" class="transcript-ref">--</span></span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Genome Reference</span>
+                        <span class="meta-val"><span id="genome-display" class="genome-ref-badge">--</span></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Filtration Funnel Panel -->
+            <div>
+                <h3>Filtration Funnel</h3>
+                <div class="funnel-container" id="funnel-container-view">
+                    <!-- Funnel Item: Raw VCF Input -->
+                    <div class="funnel-stage">
+                        <div class="funnel-header-row">
+                            <span class="funnel-stage-title">Raw VCF Variants</span>
+                            <span class="funnel-stage-val" id="funnel-raw-count">-</span>
+                        </div>
+                        <div class="funnel-progress-bar" style="width: 100%;"></div>
+                    </div>
+
+                    <!-- Funnel Item: Impact Filter -->
+                    <div class="funnel-stage">
+                        <div class="funnel-header-row">
+                            <span class="funnel-stage-title">Impact Filter (High/Mod)</span>
+                            <span class="funnel-stage-val" id="funnel-impact-count">-</span>
+                        </div>
+                        <div class="funnel-progress-bar" id="funnel-impact-bar" style="width: 0%;"></div>
+                        <span class="funnel-discard" id="funnel-impact-discard">Discarded: -</span>
+                    </div>
+
+                    <!-- Funnel Item: Frequency Filter -->
+                    <div class="funnel-stage" style="border-color: rgba(16, 185, 129, 0.2);">
+                        <div class="funnel-header-row">
+                            <span class="funnel-stage-title">Allele Frequency (&le; 0.01)</span>
+                            <span class="funnel-stage-val" id="funnel-af-count">-</span>
+                        </div>
+                        <div class="funnel-progress-bar" id="funnel-af-bar" style="width: 0%; background: #10b981;"></div>
+                        <span class="funnel-discard" id="funnel-af-discard">Discarded: -</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="compliance-footer" style="margin-top: auto; padding-top: 15px;">
+                <span>🔒 HIPAA Secure Page</span>
+            </div>
+        </aside>
+
+        <!-- MAIN TABLE PANEL -->
+        <main class="review-main">
+            <div class="review-header">
+                <div>
+                    <h1>Genomic Variant Interpretation Grid</h1>
+                    <p class="brand-tagline">Select variant candidates to confirm for Phase 3 clinical reporting.</p>
+                </div>
+                <div>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="window.close()">Close Tab</button>
+                </div>
+            </div>
+
+            <!-- Variants Table -->
+            <div class="table-container" style="flex: 1; overflow-y: auto;">
+                <table class="cases-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 50px; text-align: center;"><input type="checkbox" id="select-all-variants"></th>
+                            <th class="sortable" onclick="handleSort('hgvsg')">HGVSg <span id="sort-hgvsg" class="sort-icon">↕</span></th>
+                            <th class="sortable" onclick="handleSort('gene')">Gene <span id="sort-gene" class="sort-icon">↕</span></th>
+                            <th class="sortable" onclick="handleSort('cdna')">cDNA Change <span id="sort-cdna" class="sort-icon">↕</span></th>
+                            <th class="sortable" onclick="handleSort('protein')">Protein Change <span id="sort-protein" class="sort-icon">↕</span></th>
+                            <th>Transcript Type</th>
+                            <th class="sortable" onclick="handleSort('transcript_id')">Transcript ID <span id="sort-transcript_id" class="sort-icon">↕</span></th>
+                            <th class="sortable" onclick="handleSort('impact')">Impact <span id="sort-impact" class="sort-icon">↕</span></th>
+                            <th class="sortable" onclick="handleSort('gnomad_af')">gnomAD AF <span id="sort-gnomad_af" class="sort-icon">↕</span></th>
+                        </tr>
+                    </thead>
+                    <tbody id="variants-table-body">
+                        <tr>
+                            <td colspan="9" class="table-placeholder">Loading candidate variant list...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Footer Action Panel -->
+            <div class="review-actions-footer">
+                <div id="review-error" class="alert alert-danger hidden" style="margin-bottom: 16px;"></div>
+                <div id="review-success" class="alert alert-success hidden" style="margin-bottom: 16px;"></div>
+                <div class="review-buttons" style="display: flex; justify-content: flex-end; gap: 12px; align-items: center;">
+                    <span class="user-badge" style="background: rgba(255,255,255,0.02);"><span class="pulse-dot"></span> Operator Session Verified</span>
+                    <button type="submit" class="btn btn-primary" id="proceed-variants-button">Proceed with 0 variants</button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Script imports -->
+    <script src="/static/review.js"></script>
+</body>
+</html>
