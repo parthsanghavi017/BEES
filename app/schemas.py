@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field, constr, validator
 from typing import Dict, List, Optional
 
 class UserCreate(BaseModel):
-    username: constr(min_length=3, max_length=50, regex="^[a-zA-Z0-9_-]+$") = Field(
+    username: constr(min_length=3, max_length=50, pattern="^[a-zA-Z0-9_-]+$") = Field(
         ..., description="Alphanumeric username with underscores or hyphens."
     )
     password: constr(min_length=8) = Field(
