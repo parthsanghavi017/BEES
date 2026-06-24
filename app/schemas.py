@@ -79,6 +79,8 @@ class ClinicalCaseResponse(BaseModel):
     vcf_path: str
     upload_timestamp: datetime
     is_archived: bool
+    status: str
+    status_message: Optional[str] = None
 
     class Config:
         orm_mode = True
@@ -88,3 +90,6 @@ class DashboardStats(BaseModel):
     active_cases: int
     archived_cases: int
     indication_distribution: Dict[str, int]
+
+class VariantConfirmRequest(BaseModel):
+    selected_hgvsg: List[str]

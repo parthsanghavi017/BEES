@@ -742,3 +742,80 @@ body {
     border: 1px solid rgba(245, 158, 11, 0.2);
 }
 
+/* Status Badges */
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 12px;
+    text-transform: capitalize;
+}
+
+.status-pending {
+    background-color: rgba(148, 163, 184, 0.1);
+    color: var(--text-secondary);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.status-processing {
+    background-color: rgba(6, 182, 212, 0.1);
+    color: var(--color-secondary);
+    border: 1px solid rgba(6, 182, 212, 0.3);
+    box-shadow: 0 0 10px rgba(6, 182, 212, 0.15);
+    animation: statusPulse 1.5s infinite ease-in-out;
+}
+
+.status-completed {
+    background-color: rgba(16, 185, 129, 0.1);
+    color: var(--color-success);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.status-failed {
+    background-color: rgba(239, 68, 68, 0.1);
+    color: var(--color-danger);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+@keyframes statusPulse {
+    0% { opacity: 0.7; }
+    50% { opacity: 1; box-shadow: 0 0 12px rgba(6, 182, 212, 0.35); }
+    100% { opacity: 0.7; }
+}
+
+/* Impact Badges */
+.impact-badge {
+    font-family: monospace;
+    font-weight: bold;
+    font-size: 0.75rem;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+}
+
+.impact-high {
+    background-color: rgba(239, 68, 68, 0.1);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.impact-moderate {
+    background-color: rgba(245, 158, 11, 0.1);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+/* Custom Checkbox centering */
+.cases-table td input[type="checkbox"],
+.cases-table th input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--color-primary);
+    cursor: pointer;
+    vertical-align: middle;
+}
+
+

@@ -49,6 +49,9 @@ class ClinicalCase(Base):
     vcf_path = Column(String, nullable=False)  # Local storage path to ingested VCF
     upload_timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
     is_archived = Column(Boolean, default=False, nullable=False)
+    status = Column(String, default="Pending", nullable=False)  # Pending, Processing, Completed, Failed
+    status_message = Column(String, nullable=True)  # Error details if failed
+    filtered_variants = Column(String, nullable=True)  # Serialized JSON of surviving variants
 
 def init_db():
     """

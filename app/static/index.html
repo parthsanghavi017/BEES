@@ -118,11 +118,13 @@
                                         <th>Genome Ref</th>
                                         <th>VCF Storage Path</th>
                                         <th>Uploaded Date</th>
+                                        <th>Pipeline Status</th>
+                                        <th>Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody id="cases-table-body">
                                     <tr>
-                                        <td colspan="7" class="table-placeholder">No clinical cases ingested yet. Use the intake form to register the first patient.</td>
+                                        <td colspan="9" class="table-placeholder">No clinical cases ingested yet. Use the intake form to register the first patient.</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -241,6 +243,49 @@
                         <button type="submit" class="btn btn-primary">Create Operator</button>
                     </div>
                 </form>
+            </div>
+        </div>
+
+        <!-- VARIANT REVIEW OVERLAY PANEL -->
+        <div id="variant-review-container" class="modal-overlay hidden">
+            <div class="modal-card" style="max-width: 90%; width: 1200px;">
+                <div class="modal-header">
+                    <div>
+                        <h2>Genomic Variant Review Panel</h2>
+                        <span class="brand-tagline" id="review-case-title">CASE-0001: John Doe (Age 45, Male) • Lung Cancer (DOID:1324)</span>
+                    </div>
+                    <button class="modal-close" id="review-close-button">&times;</button>
+                </div>
+
+                <div class="table-container" style="max-height: 50vh; overflow-y: auto; margin-bottom: 24px; background-color: #0c1222;">
+                    <table class="cases-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 50px; text-align: center;"><input type="checkbox" id="select-all-variants"></th>
+                                <th>HGVSg</th>
+                                <th>Gene</th>
+                                <th>cDNA Mutation</th>
+                                <th>Protein Change</th>
+                                <th>Transcript Type</th>
+                                <th>Transcript ID</th>
+                                <th>Impact</th>
+                                <th>gnomAD AF</th>
+                            </tr>
+                        </thead>
+                        <tbody id="variants-table-body">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="review-actions-footer">
+                    <div id="review-error" class="alert alert-danger hidden" style="margin-bottom: 16px;"></div>
+                    <div id="review-success" class="alert alert-success hidden" style="margin-bottom: 16px;"></div>
+                    <div class="review-buttons" style="display: flex; justify-content: flex-end; gap: 12px;">
+                        <button type="button" class="btn btn-secondary" id="review-cancel-button">Close Review</button>
+                        <button type="button" class="btn btn-primary" id="proceed-variants-button">Proceed with 0 variants</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

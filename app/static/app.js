@@ -2,6 +2,10 @@
 let currentUser = null;
 let selectedVcfFile = null;
 let dashboardStats = null;
+let pollingInterval = null;
+let activeReviewCaseId = null;
+let selectedVariantsSet = new Set();
+let currentCaseData = null;
 
 // HSL Color Generator for Pie Chart slices
 const colors = [
@@ -26,6 +30,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupAutocomplete();
     setupDragAndDrop();
     setupCaseSubmission();
+    setupVariantReviewListeners();
 });
 
 // --- SESSION & AUTHENTICATION ---
@@ -226,7 +231,7 @@ async function fetchCases() {
             if (cases.length === 0) {
                 tableBody.innerHTML = `
                     <tr>
-                        <td colspan="7" class="table-placeholder">No clinical cases ingested yet. Use the intake form to register the first patient.</td>
+                        <td colspan="9" class="table-placeholder">No clinical cases ingested yet. Use the intake form to register the first patient.</td>
                     </tr>`;
                 return;
             }
@@ -234,7 +239,13 @@ async function fetchCases() {
             // Sort cases by upload timestamp descending (newest first)
             cases.sort((a, b) => new Date(b.upload_timestamp) - new Date(a.upload_timestamp));
 
+            let hasActiveProcessing = false;
+
             cases.forEach(c => {
+                if (c.status === "Processing") {
+                    hasActiveProcessing = true;
+                }
+
                 const tr = document.createElement("tr");
                 if (c.is_archived) tr.classList.add("row-archived");
 
@@ -243,6 +254,18 @@ async function fetchCases() {
                 // Get filename from path
                 const parts = c.vcf_path.split("/");
                 const filename = parts[parts.length - 1];
+
+                // Action buttons based on status
+                let actionButton = "";
+                if (c.status === "Pending" || c.status === "Failed") {
+                    actionButton = `<button onclick="processCase(${c.id})" class="btn btn-primary btn-sm">Process Case</button>`;
+                } else if (c.status === "Processing") {
+                    actionButton = `<button disabled class="btn btn-secondary btn-sm" style="cursor: not-allowed; opacity: 0.7;">Processing...</button>`;
+                } else if (c.status === "Completed") {
+                    actionButton = `<button onclick="viewVariants(${c.id}, '${escapeHtml(c.patient_name)}', ${c.patient_age}, '${c.patient_sex}', '${escapeHtml(c.indication_name)}', '${c.indication_doid}')" class="btn btn-secondary btn-sm" style="border-color: var(--color-primary); color: var(--color-primary);">Review Variants</button>`;
+                }
+
+                const statusTitle = c.status_message ? escapeHtml(c.status_message) : c.status;
 
                 tr.innerHTML = `
                     <td><span class="case-id">CASE-${c.id.toString().padStart(4, '0')}</span></td>
@@ -266,12 +289,24 @@ async function fetchCases() {
                         </div>
                     </td>
                     <td>${formattedDate}</td>
+                    <td>
+                        <span class="status-badge status-${c.status.toLowerCase()}" title="${statusTitle}">
+                            ${c.status}
+                        </span>
+                    </td>
+                    <td>${actionButton}</td>
                 `;
                 tableBody.appendChild(tr);
             });
+
+            if (hasActiveProcessing) {
+                startPolling();
+            } else {
+                stopPolling();
+            }
         }
     } catch (e) {
-        tableBody.innerHTML = `<tr><td colspan="7" class="table-placeholder alert-danger">Error loading case records from pipeline server.</td></tr>`;
+        tableBody.innerHTML = `<tr><td colspan="9" class="table-placeholder alert-danger">Error loading case records from pipeline server.</td></tr>`;
     }
 }
 
@@ -684,6 +719,296 @@ function setupCaseSubmission() {
         } finally {
             submitBtn.disabled = false;
             submitBtn.textContent = "Securely Ingest Case";
+        }
+    });
+}
+
+// --- POLLING CONTROLS ---
+
+function startPolling() {
+    if (pollingInterval) return;
+    console.log("Starting dashboard status polling...");
+    pollingInterval = setInterval(async () => {
+        await fetchDashboardStats();
+        // Fetch cases only, database status changes will trigger stop if none are processing
+        const tableBody = document.getElementById("cases-table-body");
+        try {
+            const response = await fetch("/api/cases");
+            if (response.ok) {
+                const cases = await response.json();
+                let hasActiveProcessing = false;
+                
+                cases.sort((a, b) => new Date(b.upload_timestamp) - new Date(a.upload_timestamp));
+                
+                // Re-render table dynamically during polling to update badges without complete redraw flicker
+                tableBody.innerHTML = "";
+                cases.forEach(c => {
+                    if (c.status === "Processing") {
+                        hasActiveProcessing = true;
+                    }
+                    
+                    const tr = document.createElement("tr");
+                    if (c.is_archived) tr.classList.add("row-archived");
+
+                    const formattedDate = new Date(c.upload_timestamp).toLocaleString();
+                    const parts = c.vcf_path.split("/");
+                    const filename = parts[parts.length - 1];
+
+                    let actionButton = "";
+                    if (c.status === "Pending" || c.status === "Failed") {
+                        actionButton = `<button onclick="processCase(${c.id})" class="btn btn-primary btn-sm">Process Case</button>`;
+                    } else if (c.status === "Processing") {
+                        actionButton = `<button disabled class="btn btn-secondary btn-sm" style="cursor: not-allowed; opacity: 0.7;">Processing...</button>`;
+                    } else if (c.status === "Completed") {
+                        actionButton = `<button onclick="viewVariants(${c.id}, '${escapeHtml(c.patient_name)}', ${c.patient_age}, '${c.patient_sex}', '${escapeHtml(c.indication_name)}', '${c.indication_doid}')" class="btn btn-secondary btn-sm" style="border-color: var(--color-primary); color: var(--color-primary);">Review Variants</button>`;
+                    }
+
+                    const statusTitle = c.status_message ? escapeHtml(c.status_message) : c.status;
+
+                    tr.innerHTML = `
+                        <td><span class="case-id">CASE-${c.id.toString().padStart(4, '0')}</span></td>
+                        <td>
+                            <div class="case-demog">
+                                <strong>${escapeHtml(c.patient_name)}</strong>
+                                <span class="case-demog-sub">Age ${c.patient_age} • ${c.patient_sex}</span>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="case-demog">
+                                <strong>${escapeHtml(c.indication_name)}</strong>
+                                <span class="case-demog-sub">${escapeHtml(c.indication_doid)}</span>
+                            </div>
+                        </td>
+                        <td><span class="transcript-ref">${c.transcript_db}</span></td>
+                        <td><span class="genome-ref-badge">${escapeHtml(c.reference_genome)}</span></td>
+                        <td>
+                            <div class="case-path" title="${escapeHtml(c.vcf_path)}">
+                                ${escapeHtml(filename)}
+                            </div>
+                        </td>
+                        <td>${formattedDate}</td>
+                        <td>
+                            <span class="status-badge status-${c.status.toLowerCase()}" title="${statusTitle}">
+                                ${c.status}
+                            </span>
+                        </td>
+                        <td>${actionButton}</td>
+                    `;
+                    tableBody.appendChild(tr);
+                });
+                
+                if (!hasActiveProcessing) {
+                    stopPolling();
+                }
+            }
+        } catch (e) {
+            console.error("Polling fetch failed:", e);
+        }
+    }, 3000);
+}
+
+function stopPolling() {
+    if (pollingInterval) {
+        console.log("Stopping dashboard status polling.");
+        clearInterval(pollingInterval);
+        pollingInterval = null;
+    }
+}
+
+// --- PIPELINE ACTIONS ---
+
+async function processCase(caseId) {
+    try {
+        const response = await fetch(`/api/cases/${caseId}/process`, {
+            method: "POST"
+        });
+        if (response.ok) {
+            await fetchCases(); // Initiates list and starts polling
+        } else {
+            const data = await response.json();
+            alert(`Failed to start processing: ${data.detail || "Server error"}`);
+        }
+    } catch (err) {
+        alert(`Network error starting case pipeline: ${err}`);
+    }
+}
+
+// --- VARIANT REVIEW CONTROLLERS ---
+
+async function viewVariants(caseId, patientName, patientAge, patientSex, indicationName, indicationDoid) {
+    activeReviewCaseId = caseId;
+    currentCaseData = { patientName, patientAge, patientSex, indicationName, indicationDoid };
+    
+    // Reset selections
+    selectedVariantsSet.clear();
+    document.getElementById("select-all-variants").checked = false;
+    updateProceedButton();
+
+    // Update Header Info
+    document.getElementById("review-case-title").textContent = 
+        `CASE-${caseId.toString().padStart(4, '0')}: ${patientName} (Age ${patientAge}, ${patientSex}) • ${indicationName} (${indicationDoid})`;
+
+    const tableBody = document.getElementById("variants-table-body");
+    tableBody.innerHTML = `<tr><td colspan="9" class="table-placeholder">Fetching annotated variants list...</td></tr>`;
+    
+    document.getElementById("review-error").classList.add("hidden");
+    document.getElementById("review-success").classList.add("hidden");
+    document.getElementById("variant-review-container").classList.remove("hidden");
+
+    try {
+        const response = await fetch(`/api/cases/${caseId}/variants`);
+        if (response.ok) {
+            const variants = await response.json();
+            renderVariantReviewTable(variants);
+        } else {
+            const data = await response.json();
+            tableBody.innerHTML = `<tr><td colspan="9" class="table-placeholder alert-danger">${data.detail || "Failed to load variants."}</td></tr>`;
+        }
+    } catch (err) {
+        tableBody.innerHTML = `<tr><td colspan="9" class="table-placeholder alert-danger">Network error connecting to variants server.</td></tr>`;
+    }
+}
+
+function renderVariantReviewTable(variants) {
+    const tableBody = document.getElementById("variants-table-body");
+    tableBody.innerHTML = "";
+
+    if (variants.length === 0) {
+        tableBody.innerHTML = `
+            <tr>
+                <td colspan="9" class="table-placeholder">Zero variants survived the hard-filtering criteria (HIGH/MODERATE impact and gnomAD AF &le; 0.01).</td>
+            </tr>`;
+        return;
+    }
+
+    variants.forEach((v, index) => {
+        const tr = document.createElement("tr");
+        
+        const afStr = v.gnomad_af === 0 ? "Novel (0.0000)" : v.gnomad_af.toFixed(5);
+        const impactClass = v.impact.toLowerCase() === "high" ? "impact-high" : "impact-moderate";
+
+        tr.innerHTML = `
+            <td style="text-align: center;">
+                <input type="checkbox" class="variant-select" data-hgvsg="${v.hgvsg}">
+            </td>
+            <td><strong class="transcript-ref" style="background-color:rgba(6, 182, 212, 0.07); color:var(--color-secondary); border:1px solid rgba(6, 182, 212, 0.15);">${v.hgvsg}</strong></td>
+            <td><strong>${escapeHtml(v.gene)}</strong></td>
+            <td><span style="font-family: monospace;">${escapeHtml(v.cdna)}</span></td>
+            <td><span style="font-family: monospace; font-weight: bold; color: #f1f5f9;">${escapeHtml(v.protein)}</span></td>
+            <td><span class="transcript-ref">${v.transcript_type}</span></td>
+            <td><span style="font-family: monospace;">${escapeHtml(v.transcript_id)}</span></td>
+            <td><span class="impact-badge ${impactClass}">${v.impact}</span></td>
+            <td><span style="font-family: monospace; font-weight: 600; color: ${v.gnomad_af === 0 ? '#10b981' : '#94a3b8'}">${afStr}</span></td>
+        `;
+        tableBody.appendChild(tr);
+    });
+
+    // Add checkboxes click handlers
+    const checkBoxes = tableBody.querySelectorAll(".variant-select");
+    checkBoxes.forEach(cb => {
+        cb.addEventListener("change", (e) => {
+            const hgvsg = e.target.getAttribute("data-hgvsg");
+            if (e.target.checked) {
+                selectedVariantsSet.add(hgvsg);
+            } else {
+                selectedVariantsSet.delete(hgvsg);
+            }
+            
+            // Keep "Select All" checkbox state in sync
+            const allChecked = Array.from(checkBoxes).every(box => box.checked);
+            document.getElementById("select-all-variants").checked = allChecked;
+            
+            updateProceedButton();
+        });
+    });
+}
+
+function updateProceedButton() {
+    const proceedBtn = document.getElementById("proceed-variants-button");
+    const count = selectedVariantsSet.size;
+    proceedBtn.textContent = `Proceed with ${count} variant${count === 1 ? '' : 's'}`;
+    
+    if (count > 0) {
+        proceedBtn.removeAttribute("disabled");
+        proceedBtn.style.opacity = "1";
+        proceedBtn.style.cursor = "pointer";
+    } else {
+        proceedBtn.setAttribute("disabled", "true");
+        proceedBtn.style.opacity = "0.6";
+        proceedBtn.style.cursor = "not-allowed";
+    }
+}
+
+function setupVariantReviewListeners() {
+    const selectAll = document.getElementById("select-all-variants");
+    
+    // Select All Handler
+    selectAll.addEventListener("change", (e) => {
+        const checkBoxes = document.querySelectorAll("#variants-table-body .variant-select");
+        checkBoxes.forEach(cb => {
+            cb.checked = e.target.checked;
+            const hgvsg = cb.getAttribute("data-hgvsg");
+            if (e.target.checked) {
+                selectedVariantsSet.add(hgvsg);
+            } else {
+                selectedVariantsSet.delete(hgvsg);
+            }
+        });
+        updateProceedButton();
+    });
+
+    // Close button click
+    document.getElementById("review-close-button").addEventListener("click", () => {
+        document.getElementById("variant-review-container").classList.add("hidden");
+    });
+    document.getElementById("review-cancel-button").addEventListener("click", () => {
+        document.getElementById("variant-review-container").classList.add("hidden");
+    });
+
+    // Proceed variants button submit
+    const proceedBtn = document.getElementById("proceed-variants-button");
+    const errorDiv = document.getElementById("review-error");
+    const successDiv = document.getElementById("review-success");
+
+    proceedBtn.addEventListener("click", async () => {
+        errorDiv.classList.add("hidden");
+        successDiv.classList.add("hidden");
+
+        const selectedList = Array.from(selectedVariantsSet);
+        if (selectedList.length === 0) return;
+
+        proceedBtn.disabled = true;
+        proceedBtn.textContent = "Submitting Review...";
+
+        try {
+            const response = await fetch(`/api/cases/${activeReviewCaseId}/variants/confirm`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ selected_hgvsg: selectedList })
+            });
+
+            const data = await response.json();
+            if (response.ok) {
+                successDiv.textContent = data.message || "Variants successfully confirmed.";
+                successDiv.classList.remove("hidden");
+                
+                // Console trace log as required
+                console.log(`[CLINICAL VARIANTS CONFIRMED] Case ID: CASE-${activeReviewCaseId} | Selected:`, selectedList);
+                
+                setTimeout(() => {
+                    document.getElementById("variant-review-container").classList.add("hidden");
+                    successDiv.classList.add("hidden");
+                }, 1500);
+            } else {
+                errorDiv.textContent = data.detail || "Validation check rejected selections.";
+                errorDiv.classList.remove("hidden");
+            }
+        } catch (err) {
+            errorDiv.textContent = "Network error occurred sending selected variants.";
+            errorDiv.classList.remove("hidden");
+        } finally {
+            proceedBtn.disabled = false;
+            updateProceedButton();
         }
     });
 }

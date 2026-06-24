@@ -5,14 +5,15 @@ import shutil
 import mimetypes
 from datetime import datetime
 from typing import List, Optional
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Response, Request
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Response, Request, BackgroundTasks
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from app.database import get_db, init_db, ClinicalCase, User
 from app.auth import get_current_user, hash_password, verify_password, create_access_token
-from app.schemas import ClinicalCaseResponse, UserResponse, UserCreate, DashboardStats
+from app.schemas import ClinicalCaseResponse, UserResponse, UserCreate, DashboardStats, VariantConfirmRequest
+from app.pipeline import run_variant_pipeline
 
 # Initialize FastAPI App
 app = FastAPI(
@@ -322,6 +323,80 @@ def search_doid(
             if len(matches) >= 10:  # Cap at 10 recommendations
                 break
     return matches
+
+
+# --- PHASE 2 PIPELINE & VARIANT INTERFACE ---
+
+@app.post("/api/cases/{case_id}/process")
+def process_case(
+    case_id: int,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Triggers the asynchronous genomic pipeline for the specified case.
+    """
+    case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Clinical case not found")
+        
+    if case.status == "Processing":
+        return {"message": "Case is currently being analyzed.", "status": case.status}
+
+    case.status = "Processing"
+    case.status_message = "Initiating processing pipeline..."
+    db.commit()
+
+    background_tasks.add_task(run_variant_pipeline, case_id)
+    return {"message": "Genomic analysis triggered successfully.", "status": case.status}
+
+@app.get("/api/cases/{case_id}/variants")
+def get_case_variants(
+    case_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns the parsed, surviving variants of a completed case.
+    """
+    case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Clinical case not found")
+
+    if case.status != "Completed":
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Variants are only reviewable when analysis status is Completed. Current status: {case.status}"
+        )
+
+    if not case.filtered_variants:
+        return []
+
+    return json.loads(case.filtered_variants)
+
+@app.post("/api/cases/{case_id}/variants/confirm")
+def confirm_case_variants(
+    case_id: int,
+    payload: VariantConfirmRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Logs the operator-confirmed variants for the specific case to prepare for Phase 3.
+    """
+    case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Clinical case not found")
+
+    # Logging to standard output as required for trace-back
+    print(f"\n[CLINICAL AUDIT LOG] Case ID: CASE-{case_id} | Operator: {current_user.username} | Timestamp: {datetime.utcnow()}")
+    print(f"[CLINICAL AUDIT LOG] Confirmed {len(payload.selected_hgvsg)} Variants:")
+    for hgvsg in payload.selected_hgvsg:
+        print(f"  - HGVSg: {hgvsg}")
+    print("[CLINICAL AUDIT LOG] End of Log.\n")
+
+    return {"message": f"Successfully logged {len(payload.selected_hgvsg)} variants for CASE-{case_id}."}
 
 
 # --- FRONTEND ROUTING & STATIC FILES ---
