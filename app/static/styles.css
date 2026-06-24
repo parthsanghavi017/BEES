@@ -721,3 +721,24 @@ body {
     border-radius: var(--radius-md);
     border: 1px solid rgba(6, 182, 212, 0.2);
 }
+
+.genome-ref-badge, .transcript-ref {
+    font-family: monospace;
+    font-weight: bold;
+    font-size: 0.8rem;
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+}
+
+.genome-ref-badge {
+    background-color: rgba(6, 182, 212, 0.1);
+    color: var(--color-secondary);
+    border: 1px solid rgba(6, 182, 212, 0.2);
+}
+
+.transcript-ref {
+    background-color: rgba(245, 158, 11, 0.1);
+    color: var(--color-warning);
+    border: 1px solid rgba(245, 158, 11, 0.2);
+}
+

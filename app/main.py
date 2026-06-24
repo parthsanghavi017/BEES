@@ -157,6 +157,7 @@ def create_case(
     indication_doid: str = Form(...),
     indication_name: str = Form(...),
     transcript_db: str = Form(...),
+    reference_genome: str = Form(...),
     vcf_file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -188,6 +189,8 @@ def create_case(
         raise HTTPException(status_code=400, detail="Invalid gender value")
     if transcript_db not in {"Ensembl", "RefSeq"}:
         raise HTTPException(status_code=400, detail="Invalid transcript database preference")
+    if reference_genome not in {"GRCh37", "GRCh38"}:
+        raise HTTPException(status_code=400, detail="Invalid reference genome version preference")
 
     # 2. File Extension Validation
     filename = vcf_file.filename
@@ -258,6 +261,7 @@ def create_case(
         indication_doid=indication_doid,
         indication_name=indication_name,
         transcript_db=transcript_db,
+        reference_genome=reference_genome,
         vcf_path=dest_path,
         upload_timestamp=datetime.utcnow(),
         is_archived=False

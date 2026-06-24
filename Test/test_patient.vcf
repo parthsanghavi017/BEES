@@ -1,0 +1,4 @@
+##fileformat=VCFv4.2
+##reference=GRCh38
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+chr17	7673803	.	G	A	100	PASS	.

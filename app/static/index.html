@@ -115,13 +115,14 @@
                                         <th>Patient Demographics</th>
                                         <th>Indication (DOID)</th>
                                         <th>Transcript DB</th>
+                                        <th>Genome Ref</th>
                                         <th>VCF Storage Path</th>
                                         <th>Uploaded Date</th>
                                     </tr>
                                 </thead>
                                 <tbody id="cases-table-body">
                                     <tr>
-                                        <td colspan="6" class="table-placeholder">No clinical cases ingested yet. Use the intake form to register the first patient.</td>
+                                        <td colspan="7" class="table-placeholder">No clinical cases ingested yet. Use the intake form to register the first patient.</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -151,7 +152,7 @@
                     </div>
 
                     <div class="form-row">
-                        <div class="form-group col-6">
+                        <div class="form-group col-4">
                             <label for="case-patient-sex">Sex at Birth</label>
                             <select id="case-patient-sex" required>
                                 <option value="" disabled selected>Select...</option>
@@ -160,11 +161,18 @@
                                 <option value="Other">Other</option>
                             </select>
                         </div>
-                        <div class="form-group col-6">
-                            <label for="case-transcript-db">Transcript Reference Preference</label>
+                        <div class="form-group col-4">
+                            <label for="case-transcript-db">Transcript DB</label>
                             <select id="case-transcript-db" required>
                                 <option value="Ensembl" selected>Ensembl</option>
                                 <option value="RefSeq">RefSeq</option>
+                            </select>
+                        </div>
+                        <div class="form-group col-4">
+                            <label for="case-reference-genome">Genome Build</label>
+                            <select id="case-reference-genome" required>
+                                <option value="GRCh38" selected>GRCh38 (hg38)</option>
+                                <option value="GRCh37">GRCh37 (hg19)</option>
                             </select>
                         </div>
                     </div>

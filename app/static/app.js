@@ -226,7 +226,7 @@ async function fetchCases() {
             if (cases.length === 0) {
                 tableBody.innerHTML = `
                     <tr>
-                        <td colspan="6" class="table-placeholder">No clinical cases ingested yet. Use the intake form to register the first patient.</td>
+                        <td colspan="7" class="table-placeholder">No clinical cases ingested yet. Use the intake form to register the first patient.</td>
                     </tr>`;
                 return;
             }
@@ -259,6 +259,7 @@ async function fetchCases() {
                         </div>
                     </td>
                     <td><span class="transcript-ref">${c.transcript_db}</span></td>
+                    <td><span class="genome-ref-badge">${escapeHtml(c.reference_genome)}</span></td>
                     <td>
                         <div class="case-path" title="${escapeHtml(c.vcf_path)}">
                             ${escapeHtml(filename)}
@@ -270,7 +271,7 @@ async function fetchCases() {
             });
         }
     } catch (e) {
-        tableBody.innerHTML = `<tr><td colspan="6" class="table-placeholder alert-danger">Error loading case records from pipeline server.</td></tr>`;
+        tableBody.innerHTML = `<tr><td colspan="7" class="table-placeholder alert-danger">Error loading case records from pipeline server.</td></tr>`;
     }
 }
 
@@ -619,6 +620,7 @@ function setupCaseSubmission() {
         const patientAge = document.getElementById("case-patient-age").value;
         const patientSex = document.getElementById("case-patient-sex").value;
         const transcriptDb = document.getElementById("case-transcript-db").value;
+        const referenceGenome = document.getElementById("case-reference-genome").value;
         
         const indicationDoid = document.getElementById("case-indication-doid").value;
         const indicationName = document.getElementById("case-indication-name").value;
@@ -647,6 +649,7 @@ function setupCaseSubmission() {
         formData.append("patient_age", patientAge);
         formData.append("patient_sex", patientSex);
         formData.append("transcript_db", transcriptDb);
+        formData.append("reference_genome", referenceGenome);
         formData.append("indication_doid", indicationDoid);
         formData.append("indication_name", indicationName);
         formData.append("vcf_file", selectedVcfFile);

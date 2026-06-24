@@ -42,6 +42,9 @@ class ClinicalCaseCreate(BaseModel):
     transcript_db: str = Field(
         ..., description="Preferred transcript database: Ensembl or RefSeq"
     )
+    reference_genome: str = Field(
+        ..., description="Reference genome: GRCh37 or GRCh38"
+    )
 
     @validator("patient_sex")
     def validate_sex(cls, v):
@@ -57,6 +60,13 @@ class ClinicalCaseCreate(BaseModel):
             raise ValueError(f"transcript_db must be one of {allowed}")
         return v
 
+    @validator("reference_genome")
+    def validate_reference_genome(cls, v):
+        allowed = {"GRCh37", "GRCh38"}
+        if v not in allowed:
+            raise ValueError(f"reference_genome must be one of {allowed}")
+        return v
+
 class ClinicalCaseResponse(BaseModel):
     id: int
     patient_name: str
@@ -65,6 +75,7 @@ class ClinicalCaseResponse(BaseModel):
     indication_doid: str
     indication_name: str
     transcript_db: str
+    reference_genome: str
     vcf_path: str
     upload_timestamp: datetime
     is_archived: bool

@@ -45,6 +45,7 @@ class ClinicalCase(Base):
     indication_doid = Column(String, nullable=False)  # e.g., DOID:162
     indication_name = Column(String, nullable=False)  # e.g., Cancer
     transcript_db = Column(String, nullable=False)  # Ensembl, RefSeq
+    reference_genome = Column(String, nullable=False)  # GRCh37, GRCh38
     vcf_path = Column(String, nullable=False)  # Local storage path to ingested VCF
     upload_timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
     is_archived = Column(Boolean, default=False, nullable=False)
