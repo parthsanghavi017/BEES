@@ -6,48 +6,87 @@
     <title>BEES - Genomic Variant Review</title>
     <link rel="stylesheet" href="/static/styles.css">
     <style>
-        /* Dedicated review page page layouts */
+        /* Dedicated review page layout - Top down dashboard */
         .review-container {
-            display: grid;
-            grid-template-columns: 360px 1fr;
+            display: flex;
+            flex-direction: column;
             min-height: 100vh;
             background-color: var(--bg-main);
+            overflow: hidden;
         }
         
-        .review-sidebar {
-            background-color: #0e1626;
-            border-right: 1px solid var(--border-color);
-            padding: 30px 24px;
-            display: flex;
-            flex-direction: column;
-            gap: 30px;
-            overflow-y: auto;
-            max-height: 100vh;
-        }
-        
-        .review-main {
-            padding: 40px;
-            display: flex;
-            flex-direction: column;
-            gap: 24px;
-            max-height: 100vh;
-            overflow-y: auto;
-        }
-
         .review-header {
+            background-color: #0c101b;
+            border-bottom: 1px solid var(--border-color);
+            padding: 16px 40px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: 20px;
+            z-index: 10;
         }
 
-        /* Funnel chart styles */
-        .funnel-container {
+        .review-dashboard {
+            background-color: rgba(22, 30, 49, 0.5);
+            backdrop-filter: blur(8px);
+            border-bottom: 1px solid var(--border-color);
+            padding: 20px 40px;
             display: flex;
             flex-direction: column;
             gap: 16px;
-            margin-top: 10px;
+            box-shadow: var(--panel-glow);
+            z-index: 5;
+        }
+        
+        .review-main {
+            padding: 24px 40px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            overflow: hidden;
+            height: calc(100vh - 350px);
+        }
+
+        /* Case Metadata - Horizontal Row */
+        .meta-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.01);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 12px 24px;
+        }
+
+        .meta-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            flex: 1;
+            min-width: 120px;
+        }
+
+        .meta-label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+        }
+
+        .meta-val {
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        /* Funnel chart - Horizontal Row (3 Columns) */
+        .funnel-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
         }
 
         .funnel-stage {
@@ -55,9 +94,12 @@
             background: rgba(255, 255, 255, 0.02);
             border: 1px solid var(--border-color);
             border-radius: var(--radius-md);
-            padding: 14px;
+            padding: 12px 20px;
             transition: var(--transition-smooth);
             overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
         }
 
         .funnel-stage::before {
@@ -71,7 +113,7 @@
         }
 
         .funnel-stage:hover {
-            transform: translateX(4px);
+            transform: translateY(-2px);
             border-color: rgba(255, 255, 255, 0.15);
             background: rgba(255, 255, 255, 0.04);
         }
@@ -92,7 +134,7 @@
         }
 
         .funnel-stage-title {
-            font-size: 0.85rem;
+            font-size: 0.8rem;
             font-weight: 700;
             color: var(--text-primary);
         }
@@ -105,7 +147,7 @@
         }
 
         .funnel-discard {
-            font-size: 0.75rem;
+            font-size: 0.7rem;
             color: var(--color-danger);
             margin-top: 4px;
             display: block;
@@ -135,140 +177,91 @@
         .sort-icon.active {
             color: var(--color-secondary);
         }
-
-        .meta-list {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .meta-item {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            padding-bottom: 8px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-        }
-
-        .meta-label {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            font-weight: 600;
-        }
-
-        .meta-val {
-            font-size: 0.95rem;
-            font-weight: 700;
-            color: var(--text-primary);
-        }
-
-        .review-sidebar h3 {
-            font-size: 0.9rem;
-            text-transform: uppercase;
-            color: var(--text-secondary);
-            letter-spacing: 0.05em;
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: 8px;
-            margin-bottom: 12px;
-        }
     </style>
 </head>
 <body>
     <div id="app" class="review-container">
-        <!-- SIDEBAR: PATIENT METADATA & FILTRATION FUNNEL -->
-        <aside class="review-sidebar">
-            <div class="brand" style="margin-bottom: 20px;">
-                <span class="brand-logo" style="font-size: 2.2rem;">🐝</span>
-                <h2 style="font-size: 1.4rem;">BEES Pipeline</h2>
-                <p class="brand-tagline">Clinical Variant Review</p>
+        <!-- TOP NAVIGATION HEADER -->
+        <header class="review-header">
+            <div class="header-logo" style="display: flex; align-items: center; gap: 12px;">
+                <span class="logo-emoji" style="font-size: 1.8rem; filter: drop-shadow(0 0 6px var(--border-focus));">🐝</span>
+                <div>
+                    <h1 style="font-size: 1.25rem; font-weight: 700;">Genomic Variant Interpretation Grid</h1>
+                    <span class="environment-badge" style="font-size: 0.65rem;">Sovereign Curation Interface</span>
+                </div>
             </div>
-
-            <!-- Case Metadata Panel -->
             <div>
-                <h3>Case Metadata</h3>
-                <div class="meta-list">
-                    <div class="meta-item">
-                        <span class="meta-label">Case ID</span>
-                        <span class="meta-val" id="case-id-display">CASE-0000</span>
-                    </div>
-                    <div class="meta-item">
-                        <span class="meta-label">Patient Name</span>
-                        <span class="meta-val" id="patient-name-display">Loading...</span>
-                    </div>
-                    <div class="meta-item">
-                        <span class="meta-label">Demographics</span>
-                        <span class="meta-val" id="demog-display">Age -- • --</span>
-                    </div>
-                    <div class="meta-item">
-                        <span class="meta-label">Clinical Indication</span>
-                        <span class="meta-val" id="indication-display">Loading...</span>
-                    </div>
-                    <div class="meta-item">
-                        <span class="meta-label">Transcript Reference</span>
-                        <span class="meta-val"><span id="transcript-display" class="transcript-ref">--</span></span>
-                    </div>
-                    <div class="meta-item">
-                        <span class="meta-label">Genome Reference</span>
-                        <span class="meta-val"><span id="genome-display" class="genome-ref-badge">--</span></span>
-                    </div>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="window.close()">Close Review</button>
+            </div>
+        </header>
+
+        <!-- TOP DASHBOARD ROW: METADATA & FILTRATION FUNNEL -->
+        <section class="review-dashboard">
+            <!-- Case Metadata - Horizontal Row -->
+            <div class="meta-row">
+                <div class="meta-item">
+                    <span class="meta-label">Case ID</span>
+                    <span class="meta-val" id="case-id-display">CASE-0000</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">Patient Name</span>
+                    <span class="meta-val" id="patient-name-display">Loading...</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">Demographics</span>
+                    <span class="meta-val" id="demog-display">Age -- • --</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">Clinical Indication</span>
+                    <span class="meta-val" id="indication-display">Loading...</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">Transcript Reference</span>
+                    <span class="meta-val"><span id="transcript-display" class="transcript-ref">--</span></span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">Genome Reference</span>
+                    <span class="meta-val"><span id="genome-display" class="genome-ref-badge">--</span></span>
                 </div>
             </div>
 
-            <!-- Filtration Funnel Panel -->
-            <div>
-                <h3>Filtration Funnel</h3>
-                <div class="funnel-container" id="funnel-container-view">
-                    <!-- Funnel Item: Raw VCF Input -->
-                    <div class="funnel-stage">
-                        <div class="funnel-header-row">
-                            <span class="funnel-stage-title">Raw VCF Variants</span>
-                            <span class="funnel-stage-val" id="funnel-raw-count">-</span>
-                        </div>
-                        <div class="funnel-progress-bar" style="width: 100%;"></div>
+            <!-- Filtration Funnel - Horizontal Row (3 Columns) -->
+            <div class="funnel-row">
+                <!-- Funnel Stage 1: Raw Inputs -->
+                <div class="funnel-stage">
+                    <div class="funnel-header-row">
+                        <span class="funnel-stage-title">Raw VCF Variants</span>
+                        <span class="funnel-stage-val" id="funnel-raw-count">-</span>
                     </div>
+                    <div class="funnel-progress-bar" style="width: 100%;"></div>
+                </div>
 
-                    <!-- Funnel Item: Impact Filter -->
-                    <div class="funnel-stage">
-                        <div class="funnel-header-row">
-                            <span class="funnel-stage-title">Impact Filter (High/Mod)</span>
-                            <span class="funnel-stage-val" id="funnel-impact-count">-</span>
-                        </div>
-                        <div class="funnel-progress-bar" id="funnel-impact-bar" style="width: 0%;"></div>
-                        <span class="funnel-discard" id="funnel-impact-discard">Discarded: -</span>
+                <!-- Funnel Stage 2: Impact Filtering -->
+                <div class="funnel-stage">
+                    <div class="funnel-header-row">
+                        <span class="funnel-stage-title">Impact Filter (High/Mod)</span>
+                        <span class="funnel-stage-val" id="funnel-impact-count">-</span>
                     </div>
+                    <div class="funnel-progress-bar" id="funnel-impact-bar" style="width: 0%;"></div>
+                    <span class="funnel-discard" id="funnel-impact-discard">Discarded: -</span>
+                </div>
 
-                    <!-- Funnel Item: Frequency Filter -->
-                    <div class="funnel-stage" style="border-color: rgba(16, 185, 129, 0.2);">
-                        <div class="funnel-header-row">
-                            <span class="funnel-stage-title">Allele Frequency (&le; 0.01)</span>
-                            <span class="funnel-stage-val" id="funnel-af-count">-</span>
-                        </div>
-                        <div class="funnel-progress-bar" id="funnel-af-bar" style="width: 0%; background: #10b981;"></div>
-                        <span class="funnel-discard" id="funnel-af-discard">Discarded: -</span>
+                <!-- Funnel Stage 3: Allele Frequency Filtering -->
+                <div class="funnel-stage" style="border-color: rgba(16, 185, 129, 0.2);">
+                    <div class="funnel-header-row">
+                        <span class="funnel-stage-title">Allele Frequency (&le; 0.01)</span>
+                        <span class="funnel-stage-val" id="funnel-af-count">-</span>
                     </div>
+                    <div class="funnel-progress-bar" id="funnel-af-bar" style="width: 0%; background: #10b981;"></div>
+                    <span class="funnel-discard" id="funnel-af-discard">Discarded: -</span>
                 </div>
             </div>
-            
-            <div class="compliance-footer" style="margin-top: auto; padding-top: 15px;">
-                <span>🔒 HIPAA Secure Page</span>
-            </div>
-        </aside>
+        </section>
 
         <!-- MAIN TABLE PANEL -->
         <main class="review-main">
-            <div class="review-header">
-                <div>
-                    <h1>Genomic Variant Interpretation Grid</h1>
-                    <p class="brand-tagline">Select variant candidates to confirm for Phase 3 clinical reporting.</p>
-                </div>
-                <div>
-                    <button type="button" class="btn btn-secondary btn-sm" onclick="window.close()">Close Tab</button>
-                </div>
-            </div>
-
             <!-- Variants Table -->
-            <div class="table-container" style="flex: 1; overflow-y: auto;">
+            <div class="table-container" style="flex: 1; overflow-y: auto; background-color: #0c1222;">
                 <table class="cases-table">
                     <thead>
                         <tr>
@@ -293,9 +286,9 @@
 
             <!-- Footer Action Panel -->
             <div class="review-actions-footer">
-                <div id="review-error" class="alert alert-danger hidden" style="margin-bottom: 16px;"></div>
-                <div id="review-success" class="alert alert-success hidden" style="margin-bottom: 16px;"></div>
-                <div class="review-buttons" style="display: flex; justify-content: flex-end; gap: 12px; align-items: center;">
+                <div id="review-error" class="alert alert-danger hidden" style="margin-bottom: 0px;"></div>
+                <div id="review-success" class="alert alert-success hidden" style="margin-bottom: 0px;"></div>
+                <div class="review-buttons" style="display: flex; justify-content: flex-end; gap: 12px; align-items: center; margin-top: 10px;">
                     <span class="user-badge" style="background: rgba(255,255,255,0.02);"><span class="pulse-dot"></span> Operator Session Verified</span>
                     <button type="submit" class="btn btn-primary" id="proceed-variants-button">Proceed with 0 variants</button>
                 </div>
