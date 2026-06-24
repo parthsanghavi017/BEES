@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BEES Clinical Genomic Ingestion Portal</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- LOGIN SCREEN -->
+        <div id="login-container" class="fade-in">
+            <div class="login-card">
+                <div class="brand">
+                    <span class="brand-logo">🐝</span>
+                    <h2>BEES Pipeline</h2>
+                    <p class="brand-tagline">BioOncology Evidence Enrichment System</p>
+                </div>
+                
+                <form id="login-form">
+                    <div class="form-group">
+                        <label for="login-username">Operator Username</label>
+                        <input type="text" id="login-username" required placeholder="e.g. clin_bio_admin">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="login-password">Security Credentials</label>
+                        <input type="password" id="login-password" required placeholder="••••••••">
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary btn-block">Authenticate Session</button>
+                </form>
+                <div id="login-error" class="alert alert-danger hidden"></div>
+                <div class="compliance-footer">
+                    <span>🔒 HIPAA Compliant Session</span>
+                    <span>• Local Execution Only</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- MAIN DASHBOARD -->
+        <div id="dashboard-container" class="hidden">
+            <!-- Navigation Header -->
+            <header class="app-header">
+                <div class="header-logo">
+                    <span class="logo-emoji">🐝</span>
+                    <div>
+                        <h1>BEES Portal</h1>
+                        <span class="environment-badge">Local Environment Setup</span>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <span class="user-badge"><span class="pulse-dot"></span> Operator: <strong id="current-username">Admin</strong></span>
+                    <button id="add-user-trigger" class="btn btn-secondary btn-sm">Add Operator</button>
+                    <button id="logout-button" class="btn btn-danger btn-sm">Terminate Session</button>
+                </div>
+            </header>
+
+            <!-- Main Content Area -->
+            <main class="dashboard-content fade-in">
+                <!-- Top Summary Metrics Cards -->
+                <section class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-icon">📂</div>
+                        <div class="metric-details">
+                            <h3>Total Ingested Cases</h3>
+                            <p class="metric-value" id="stat-total-cases">0</p>
+                        </div>
+                    </div>
+                    <div class="metric-card active-card">
+                        <div class="metric-icon">🧪</div>
+                        <div class="metric-details">
+                            <h3>Active Analysis Cases</h3>
+                            <p class="metric-value" id="stat-active-cases">0</p>
+                        </div>
+                    </div>
+                    <div class="metric-card archived-card">
+                        <div class="metric-icon">📦</div>
+                        <div class="metric-details">
+                            <h3>Archived Records</h3>
+                            <p class="metric-value" id="stat-archived-cases">0</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Visualization and Action Bar -->
+                <section class="dashboard-layout">
+                    <!-- Chart & Indication Stats -->
+                    <div class="panel visualization-panel">
+                        <h2>Indication Distribution (Cancer Types)</h2>
+                        <div class="chart-wrapper">
+                            <!-- Custom dynamic SVG pie/donut chart container -->
+                            <div id="pie-chart-container">
+                                <svg id="dynamic-pie-chart" viewBox="0 0 200 200" width="100%" height="100%">
+                                    <circle cx="100" cy="100" r="80" fill="transparent" stroke="#222f3e" stroke-width="40" />
+                                    <text x="100" y="105" text-anchor="middle" fill="#8b9bb4" font-size="12">No Cases</text>
+                                </svg>
+                            </div>
+                            <div id="chart-legend" class="chart-legend"></div>
+                        </div>
+                    </div>
+
+                    <!-- Cases Actions and List Table -->
+                    <div class="panel cases-panel">
+                        <div class="panel-header">
+                            <h2>Clinical Case Records</h2>
+                            <button id="create-case-trigger" class="btn btn-primary">+ Ingest New Case</button>
+                        </div>
+                        
+                        <div class="table-container">
+                            <table class="cases-table">
+                                <thead>
+                                    <tr>
+                                        <th>Case ID</th>
+                                        <th>Patient Demographics</th>
+                                        <th>Indication (DOID)</th>
+                                        <th>Transcript DB</th>
+                                        <th>VCF Storage Path</th>
+                                        <th>Uploaded Date</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="cases-table-body">
+                                    <tr>
+                                        <td colspan="6" class="table-placeholder">No clinical cases ingested yet. Use the intake form to register the first patient.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
+
+        <!-- NEW CASE CREATION MODAL -->
+        <div id="case-modal" class="modal-overlay hidden">
+            <div class="modal-card">
+                <div class="modal-header">
+                    <h2>Ingest Patient VCF</h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <form id="create-case-form" enctype="multipart/form-data">
+                    <div class="form-row">
+                        <div class="form-group col-8">
+                            <label for="case-patient-name">Patient Name / Identifier</label>
+                            <input type="text" id="case-patient-name" required placeholder="e.g. PT-4091">
+                        </div>
+                        <div class="form-group col-4">
+                            <label for="case-patient-age">Age (Years)</label>
+                            <input type="number" id="case-patient-age" min="0" max="120" required placeholder="e.g. 54">
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group col-6">
+                            <label for="case-patient-sex">Sex at Birth</label>
+                            <select id="case-patient-sex" required>
+                                <option value="" disabled selected>Select...</option>
+                                <option value="Male">Male</option>
+                                <option value="Female">Female</option>
+                                <option value="Other">Other</option>
+                            </select>
+                        </div>
+                        <div class="form-group col-6">
+                            <label for="case-transcript-db">Transcript Reference Preference</label>
+                            <select id="case-transcript-db" required>
+                                <option value="Ensembl" selected>Ensembl</option>
+                                <option value="RefSeq">RefSeq</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Disease Ontology Typeahead -->
+                    <div class="form-group relative">
+                        <label for="case-indication-search">Indication Type (Search DOID Ontology)</label>
+                        <input type="text" id="case-indication-search" autocomplete="off" placeholder="Type to search (e.g. Lung Cancer, Breast)">
+                        <input type="hidden" id="case-indication-doid" required>
+                        <input type="hidden" id="case-indication-name" required>
+                        <div id="doid-autocomplete-results" class="autocomplete-dropdown hidden"></div>
+                        <div id="doid-selected-badge" class="selected-badge hidden">
+                            <span id="badge-text"></span>
+                            <span id="badge-remove" class="badge-remove">&times;</span>
+                        </div>
+                    </div>
+
+                    <!-- Drag & Drop Zone -->
+                    <div class="form-group">
+                        <label>Ingest Genomic VCF File (.vcf or .vcf.gz)</label>
+                        <div id="vcf-dropzone" class="dropzone">
+                            <div class="dropzone-prompt">
+                                <span class="dropzone-icon">📥</span>
+                                <p>Drag and drop patient VCF here, or <span class="browse-link">browse files</span></p>
+                                <p class="dropzone-sub">Accepted formats: .vcf, .vcf.gz (Strict validation enabled)</p>
+                            </div>
+                            <input type="file" id="case-vcf-file" accept=".vcf,.vcf.gz" class="hidden">
+                            <div id="dropzone-file-info" class="dropzone-file-info hidden">
+                                <span class="file-name-label"></span>
+                                <button type="button" id="remove-file-button" class="btn btn-sm btn-secondary">Change File</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="case-error" class="alert alert-danger hidden"></div>
+                    <div id="case-success" class="alert alert-success hidden">Case submitted successfully!</div>
+
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary modal-close-btn">Cancel</button>
+                        <button type="submit" id="submit-case-button" class="btn btn-primary">Securely Ingest Case</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- NEW OPERATOR USER MODAL -->
+        <div id="user-modal" class="modal-overlay hidden">
+            <div class="modal-card modal-sm">
+                <div class="modal-header">
+                    <h2>Register Operator</h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <form id="create-user-form">
+                    <div class="form-group">
+                        <label for="user-username">Username</label>
+                        <input type="text" id="user-username" required placeholder="Username (alphanumeric)">
+                    </div>
+                    <div class="form-group">
+                        <label for="user-password">Password</label>
+                        <input type="password" id="user-password" required placeholder="Minimum 8 characters">
+                    </div>
+                    <div id="user-error" class="alert alert-danger hidden"></div>
+                    <div id="user-success" class="alert alert-success hidden">Operator registered successfully!</div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary modal-close-btn">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Create Operator</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

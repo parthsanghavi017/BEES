@@ -1,0 +1,30 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Databases & local storage
+*.db
+*.sqlite
+*.sqlite3
+app/local_storage/vcfs/*
+!app/local_storage/vcfs/.gitkeep
+
+# Large clinical reference files & pre-existing databases
+References/
+Var_DB/
+*.jar
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE configs
+.vscode/
+.idea/
+.DS_Store
