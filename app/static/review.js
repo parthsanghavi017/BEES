@@ -8,8 +8,8 @@ let currentSortDir = 'asc'; // 'asc' or 'desc'
 
 function formatBadgeList(str, type) {
     if (!str || str === "None" || str === "none") {
-        if (type === 'tier') return `<span class="tier-badge tier-3">Tier 3</span>`;
-        if (type === 'level') return `<span class="level-badge level-vus">Level VUS</span>`;
+        if (type === 'tier') return `<span class="tier-badge tier-3">3</span>`;
+        if (type === 'level') return `<span class="level-badge level-vus">VUS</span>`;
         if (type === 'source') return `<span class="source-badge source-none">None</span>`;
         return `<span style="color: var(--text-muted);">None</span>`;
     }
@@ -18,7 +18,8 @@ function formatBadgeList(str, type) {
         const val = item.trim();
         if (type === 'tier') {
             const cls = val.toLowerCase().replace(" ", "-");
-            return `<span class="tier-badge ${cls}">${val}</span>`;
+            const displayText = val.replace(/tier\s*/i, "").trim();
+            return `<span class="tier-badge ${cls}">${displayText}</span>`;
         }
         if (type === 'source') {
             const cls = "source-" + val.toLowerCase().replace(" ", "-");
@@ -26,7 +27,8 @@ function formatBadgeList(str, type) {
         }
         if (type === 'level') {
             const cls = val.toLowerCase().replace(" ", "-");
-            return `<span class="level-badge ${cls}">${val}</span>`;
+            const displayText = val.replace(/level\s*/i, "").trim();
+            return `<span class="level-badge ${cls}">${displayText}</span>`;
         }
         if (type === 'biomarker') {
             return `<span class="transcript-ref" style="background-color:rgba(255,255,255,0.03); color:#e2e8f0; border:1px solid rgba(255,255,255,0.08);">${val}</span>`;
@@ -47,6 +49,21 @@ function formatBadgeList(str, type) {
         return `<strong>${val}</strong>`;
     }).join("<span style='color:var(--text-muted); margin:0 4px;'>|</span>");
 }
+
+function formatProteinChange(protein) {
+    if (!protein) return "";
+    let clean = protein.trim();
+    if (clean.toLowerCase().startsWith("p.")) {
+        clean = clean.substring(2);
+    }
+    clean = clean.replace(/[\(\)\[\]]/g, "");
+    clean = clean.trim();
+    if (clean === "?" || clean === "" || clean.toLowerCase() === "unknown") {
+        return "";
+    }
+    return clean;
+}
+
 
 document.addEventListener("DOMContentLoaded", () => {
     extractCaseId();
@@ -202,7 +219,7 @@ function renderVariantsTable() {
             <td><strong class="transcript-ref" style="background-color:rgba(6, 182, 212, 0.07); color:var(--color-secondary); border:1px solid rgba(6, 182, 212, 0.15);">${v.hgvsg}</strong></td>
             <td>${geneCellContent}</td>
             <td><span style="font-family: monospace;">${escapeHtml(v.cdna)}</span></td>
-            <td><span style="font-family: monospace; font-weight: bold; color: #f1f5f9;">${escapeHtml(v.protein)}</span></td>
+            <td><span style="font-family: monospace; font-weight: bold; color: #f1f5f9;">${escapeHtml(formatProteinChange(v.protein))}</span></td>
             <td><span class="transcript-ref">${v.transcript_type}</span></td>
             <td><span style="font-family: monospace;">${escapeHtml(v.transcript_id)}</span></td>
             <td><span class="impact-badge ${impactClass}">${consequenceText}</span></td>
