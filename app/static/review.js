@@ -17,8 +17,12 @@ function formatBadgeList(str, type) {
     return str.split(" | ").map(item => {
         const val = item.trim();
         if (type === 'tier') {
-            const cls = val.toLowerCase().replace(" ", "-");
-            const displayText = val.replace(/tier\s*/i, "").trim();
+            let cls = val.toLowerCase().replace(" ", "-");
+            let displayText = val.replace(/tier\s*/i, "").trim();
+            if (displayText.toUpperCase() === "VUS" || cls === "vus" || cls === "tier-vus") {
+                displayText = "3";
+                cls = "tier-3";
+            }
             return `<span class="tier-badge ${cls}">${displayText}</span>`;
         }
         if (type === 'source') {
