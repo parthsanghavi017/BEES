@@ -54,6 +54,23 @@ function formatBadgeList(str, type) {
     }).join("<span style='color:var(--text-muted); margin:0 4px;'>|</span>");
 }
 
+function formatReferenceLinks(evidence_str) {
+    if (!evidence_str || evidence_str === "None") return "None";
+    return evidence_str.split(" | ").map(rowItem => {
+        return rowItem.split(";").map(subItem => {
+            const trimmed = subItem.trim();
+            if (trimmed.toUpperCase().startsWith("PMID:")) {
+                const id = trimmed.replace(/pmid:/i, "");
+                return `<a href="https://pubmed.ncbi.nlm.nih.gov/${id}" target="_blank" class="transcript-ref" style="color:var(--color-secondary); text-decoration:none; border-bottom: 1px dashed var(--color-secondary); padding: 1px 0;">${trimmed}</a>`;
+            }
+            if (trimmed.toUpperCase() === "ONCOKB") {
+                return `<a href="https://www.oncokb.org/" target="_blank" class="transcript-ref" style="color:var(--color-secondary); text-decoration:none; border-bottom: 1px dashed var(--color-secondary); padding: 1px 0;">OncoKB</a>`;
+            }
+            return `<span style="font-family: monospace;">${trimmed}</span>`;
+        }).join("<span style='color:var(--text-muted); margin:0 3px;'>;</span>");
+    }).join("<span style='color:var(--text-muted); margin:0 4px;'> | </span>");
+}
+
 function formatProteinChange(protein, keepPrefix = true) {
     if (!protein) return "";
     let clean = protein.trim();
@@ -700,16 +717,16 @@ function populateReportInfo() {
                 <td><span class="tier-badge tier-${tier_clean.toLowerCase().includes('1') ? '1' : (tier_clean.toLowerCase().includes('2') ? '2' : '3')}">${escapeHtml(tier_clean)}</span></td>
                 <td><span class="level-badge level-${level_clean.toLowerCase()}">${escapeHtml(level_clean)}</span></td>
                 <td>${escapeHtml(drug_clean)}</td>
-                <td>${escapeHtml(reference_val)}</td>
+                <td>${formatReferenceLinks(reference_val)}</td>
             `;
             summaryBody.appendChild(tr);
         });
     }
 
     // 3. Draft Narrative Blocks & button text
-    const generateBtn = document.getElementById("btn-generate-report");
+    const btnText = document.getElementById("btn-generate-text");
     if (caseData.report_draft) {
-        if (generateBtn) generateBtn.textContent = "Regenerate Draft (local LLM)";
+        if (btnText) btnText.textContent = "Regenerate Draft (local LLM)";
         try {
             const parsed = JSON.parse(caseData.report_draft);
             document.getElementById("report-textarea-gene").value = parsed.gene_analysis || "";
@@ -719,7 +736,7 @@ function populateReportInfo() {
             console.error("Failed to parse report draft JSON:", e);
         }
     } else {
-        if (generateBtn) generateBtn.textContent = "Generate Draft (local LLM)";
+        if (btnText) btnText.textContent = "Generate Draft (local LLM)";
         document.getElementById("report-textarea-gene").value = "";
         document.getElementById("report-textarea-variant").value = "";
         document.getElementById("report-textarea-evidence").value = "";
@@ -763,8 +780,8 @@ function setupReportListeners() {
                     setTimeout(() => successEl.classList.add("hidden"), 3000);
                     
                     // Sync regenerate button state
-                    const generateBtn = document.getElementById("btn-generate-report");
-                    if (generateBtn) generateBtn.textContent = "Regenerate Draft (local LLM)";
+                    const btnText = document.getElementById("btn-generate-text");
+                    if (btnText) btnText.textContent = "Regenerate Draft (local LLM)";
                 } else {
                     errorEl.textContent = respData.detail || "Failed to save report draft.";
                     errorEl.classList.remove("hidden");
@@ -783,14 +800,15 @@ function setupReportListeners() {
             const errorEl = document.getElementById("report-error");
             const successEl = document.getElementById("report-success");
             const spinner = document.getElementById("generate-spinner");
-            const isRegenerate = generateBtn.textContent.includes("Regenerate");
+            const btnText = document.getElementById("btn-generate-text");
+            const isRegenerate = btnText && btnText.textContent.includes("Regenerate");
             
             errorEl.classList.add("hidden");
             successEl.classList.add("hidden");
             
-            spinner.classList.remove("hidden");
+            if (spinner) spinner.classList.remove("hidden");
             generateBtn.disabled = true;
-            generateBtn.textContent = isRegenerate ? "Regenerating..." : "Generating...";
+            if (btnText) btnText.textContent = isRegenerate ? "Regenerating..." : "Generating...";
 
             try {
                 const response = await fetch(`/api/cases/${caseId}/report/generate`, {
@@ -817,9 +835,9 @@ function setupReportListeners() {
                 errorEl.textContent = "Network error communicating with local LLM service.";
                 errorEl.classList.remove("hidden");
             } finally {
-                spinner.classList.add("hidden");
+                if (spinner) spinner.classList.add("hidden");
                 generateBtn.disabled = false;
-                generateBtn.textContent = "Regenerate Draft (local LLM)";
+                if (btnText) btnText.textContent = "Regenerate Draft (local LLM)";
             }
         });
     }
