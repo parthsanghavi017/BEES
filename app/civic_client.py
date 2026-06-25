@@ -210,7 +210,8 @@ def fetch_civic_evidence(gene: str, protein: str, cdna: str, consequence: str = 
                         "drug": drug,
                         "response": response,
                         "pmids": first_pmid,
-                        "source": "CIViC"
+                        "source": "CIViC",
+                        "description": getattr(e, "description", "")
                     })
     except Exception as ex:
         logger.error(f"civicpy query failed for {gene} {protein} {cdna}: {ex}")

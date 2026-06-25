@@ -54,18 +54,19 @@ function formatBadgeList(str, type) {
     }).join("<span style='color:var(--text-muted); margin:0 4px;'>|</span>");
 }
 
-function formatProteinChange(protein) {
+function formatProteinChange(protein, keepPrefix = true) {
     if (!protein) return "";
     let clean = protein.trim();
-    if (clean.toLowerCase().startsWith("p.")) {
+    let hasPrefix = clean.toLowerCase().startsWith("p.");
+    if (hasPrefix) {
         clean = clean.substring(2);
     }
     clean = clean.replace(/[\(\)\[\]]/g, "");
     clean = clean.trim();
-    if (clean === "?" || clean === "" || clean.toLowerCase() === "unknown") {
+    if (clean === "?" || clean === "" || clean.toLowerCase() === "unknown" || clean.includes("?")) {
         return "";
     }
-    return clean;
+    return (hasPrefix || keepPrefix) ? "p." + clean : clean;
 }
 
 
@@ -230,6 +231,9 @@ function renderVariantsTable() {
             });
         }
 
+        const isSplice = v.consequence && v.consequence.toLowerCase().includes("splice");
+        const displayProtein = isSplice ? v.cdna : formatProteinChange(v.protein, true);
+
         tr.innerHTML = `
             <td style="text-align: center;">
                 <input type="checkbox" class="variant-select" data-hgvsg="${v.hgvsg}" ${isChecked}>
@@ -237,7 +241,7 @@ function renderVariantsTable() {
             <td><strong class="transcript-ref" style="background-color:rgba(6, 182, 212, 0.07); color:var(--color-secondary); border:1px solid rgba(6, 182, 212, 0.15);">${v.hgvsg}</strong></td>
             <td>${geneCellContent}</td>
             <td><span style="font-family: monospace;">${escapeHtml(v.cdna)}</span></td>
-            <td><span style="font-family: monospace; font-weight: bold; color: #f1f5f9;">${escapeHtml(formatProteinChange(v.protein))}</span></td>
+            <td><span style="font-family: monospace; font-weight: bold; color: #f1f5f9;">${escapeHtml(displayProtein)}</span></td>
             <td><span class="transcript-ref">${v.transcript_type}</span></td>
             <td><span style="font-family: monospace;">${escapeHtml(v.transcript_id)}</span></td>
             <td><span class="impact-badge ${impactClass}">${consequenceText}</span></td>
@@ -556,6 +560,9 @@ function setupListeners() {
                 const consequence = cleanStr(v.consequence);
                 const af = cleanStr(v.gnomad_af);
                 
+                const isSplice = consequence.toLowerCase().includes("splice");
+                const displayProtein = isSplice ? cdna : formatProteinChange(protein, true);
+                
                 // Split pipe-separated columns
                 const tiers = cleanStr(v.tier).split(" | ");
                 const levels = cleanStr(v.level).split(" | ");
@@ -581,7 +588,7 @@ function setupListeners() {
                     const rowSrc = cleanStr(sources[i] || "");
                     
                     const rowData = [
-                        hgvsg, gene, cdna, protein, 
+                        hgvsg, gene, cdna, displayProtein, 
                         tx_type, tx_id, consequence, af,
                         rowTier, rowLevel, rowBt, rowEv, 
                         rowDrug, rowResp, rowSrc
@@ -667,7 +674,7 @@ function populateReportInfo() {
     // Filter variantsData based on selectedSet
     const confirmed = variantsData.filter(v => selectedSet.has(v.hgvsg));
     if (confirmed.length === 0) {
-        summaryBody.innerHTML = `<tr><td colspan="6" class="table-placeholder">No confirmed variants selected. Go back and select variants.</td></tr>`;
+        summaryBody.innerHTML = `<tr><td colspan="9" class="table-placeholder">No confirmed variants selected. Go back and select variants.</td></tr>`;
     } else {
         confirmed.forEach(v => {
             const tr = document.createElement("tr");
@@ -676,22 +683,33 @@ function populateReportInfo() {
             const tier_clean = v.tier ? v.tier.split(" | ").map(t => t.replace(/tier\s*/i, "").trim()).join(" | ") : "3";
             const level_clean = v.level ? v.level.split(" | ").map(l => l.replace(/level\s*/i, "").trim()).join(" | ") : "VUS";
             const drug_clean = v.drug ? v.drug : "None";
-            const type_clean = v.biomarker_type ? v.biomarker_type : "None";
+            
+            // p. Notation: clean of brackets, keep prefix without brackets. Empty for splice.
+            const isSplice = v.consequence && v.consequence.toLowerCase().includes("splice");
+            const p_notation = isSplice ? "" : formatProteinChange(v.protein, true);
+            const c_notation = v.cdna ? v.cdna : "";
+            const biomarker_effect = v.response ? v.response : "None";
+            const reference_val = v.evidence ? v.evidence : "None";
             
             tr.innerHTML = `
+                <td><strong>${escapeHtml(v.gene)}</strong></td>
                 <td><strong class="transcript-ref" style="background-color:rgba(6, 182, 212, 0.07); color:var(--color-secondary); border:1px solid rgba(6, 182, 212, 0.15);">${escapeHtml(v.hgvsg)}</strong></td>
-                <td><strong>${escapeHtml(v.gene)}</strong> <span style="font-family: monospace;">${escapeHtml(formatProteinChange(v.protein))}</span></td>
+                <td><span style="font-family: monospace;">${escapeHtml(c_notation)}</span></td>
+                <td><span style="font-family: monospace;">${escapeHtml(p_notation)}</span></td>
+                <td>${escapeHtml(biomarker_effect)}</td>
                 <td><span class="tier-badge tier-${tier_clean.toLowerCase().includes('1') ? '1' : (tier_clean.toLowerCase().includes('2') ? '2' : '3')}">${escapeHtml(tier_clean)}</span></td>
                 <td><span class="level-badge level-${level_clean.toLowerCase()}">${escapeHtml(level_clean)}</span></td>
                 <td>${escapeHtml(drug_clean)}</td>
-                <td><span class="transcript-ref">${escapeHtml(type_clean)}</span></td>
+                <td>${escapeHtml(reference_val)}</td>
             `;
             summaryBody.appendChild(tr);
         });
     }
 
-    // 3. Draft Narrative Blocks
+    // 3. Draft Narrative Blocks & button text
+    const generateBtn = document.getElementById("btn-generate-report");
     if (caseData.report_draft) {
+        if (generateBtn) generateBtn.textContent = "Regenerate Draft (local LLM)";
         try {
             const parsed = JSON.parse(caseData.report_draft);
             document.getElementById("report-textarea-gene").value = parsed.gene_analysis || "";
@@ -701,6 +719,7 @@ function populateReportInfo() {
             console.error("Failed to parse report draft JSON:", e);
         }
     } else {
+        if (generateBtn) generateBtn.textContent = "Generate Draft (local LLM)";
         document.getElementById("report-textarea-gene").value = "";
         document.getElementById("report-textarea-variant").value = "";
         document.getElementById("report-textarea-evidence").value = "";
@@ -742,6 +761,10 @@ function setupReportListeners() {
                     successEl.textContent = respData.message || "Report draft saved successfully.";
                     successEl.classList.remove("hidden");
                     setTimeout(() => successEl.classList.add("hidden"), 3000);
+                    
+                    // Sync regenerate button state
+                    const generateBtn = document.getElementById("btn-generate-report");
+                    if (generateBtn) generateBtn.textContent = "Regenerate Draft (local LLM)";
                 } else {
                     errorEl.textContent = respData.detail || "Failed to save report draft.";
                     errorEl.classList.remove("hidden");
@@ -760,13 +783,14 @@ function setupReportListeners() {
             const errorEl = document.getElementById("report-error");
             const successEl = document.getElementById("report-success");
             const spinner = document.getElementById("generate-spinner");
+            const isRegenerate = generateBtn.textContent.includes("Regenerate");
             
             errorEl.classList.add("hidden");
             successEl.classList.add("hidden");
             
             spinner.classList.remove("hidden");
             generateBtn.disabled = true;
-            generateBtn.textContent = "Generating...";
+            generateBtn.textContent = isRegenerate ? "Regenerating..." : "Generating...";
 
             try {
                 const response = await fetch(`/api/cases/${caseId}/report/generate`, {
@@ -795,7 +819,7 @@ function setupReportListeners() {
             } finally {
                 spinner.classList.add("hidden");
                 generateBtn.disabled = false;
-                generateBtn.textContent = "Generate Draft (local LLM)";
+                generateBtn.textContent = "Regenerate Draft (local LLM)";
             }
         });
     }

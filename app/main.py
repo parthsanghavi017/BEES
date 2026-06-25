@@ -719,26 +719,48 @@ def download_case_report_docx(
     h2 = doc.add_heading(level=1)
     h2.add_run("2. Variant Classification Summary").font.color.rgb = RGBColor(15, 23, 42)
     
-    table_summary = doc.add_table(rows=1, cols=6)
+    table_summary = doc.add_table(rows=1, cols=9)
     table_summary.style = 'Table Grid'
     
-    headers = ["Variant (HGVSg)", "Gene", "Tier", "Level", "Drug(s)", "Biomarker Type"]
+    headers = [
+        "Gene", "Variant (HGVSg)", "c. Notation", "p. Notation", 
+        "Biomarker Effect", "Tier", "Level", "Drug(s)", "Reference"
+    ]
     hdr_cells = table_summary.rows[0].cells
     for i, h in enumerate(headers):
         hdr_cells[i].paragraphs[0].add_run(h).font.bold = True
         
+    from app.llm_service import format_protein_change
+
     for v in confirmed_variants:
         row_cells = table_summary.add_row().cells
-        row_cells[0].paragraphs[0].add_run(v.get("hgvsg", ""))
-        row_cells[1].paragraphs[0].add_run(f"{v.get('gene', '')} {v.get('protein', '')}")
         
-        tier_clean = v.get("tier", "").replace("Tier ", "")
-        level_clean = v.get("level", "").replace("Level ", "")
+        gene_name = v.get("gene", "")
+        hgvsg = v.get("hgvsg", "")
+        cdna = v.get("cdna", "")
+        consequence = v.get("consequence", "")
+        p_notation = format_protein_change(v.get("protein", ""), consequence)
         
-        row_cells[2].paragraphs[0].add_run(tier_clean)
-        row_cells[3].paragraphs[0].add_run(level_clean)
-        row_cells[4].paragraphs[0].add_run(v.get("drug", "None"))
-        row_cells[5].paragraphs[0].add_run(v.get("biomarker_type", "None"))
+        biomarker_effect = v.get("response", "None")
+        
+        tier_raw = v.get("tier", "")
+        tier_clean = " | ".join(t.replace("Tier ", "").strip() for t in tier_raw.split(" | ")) if tier_raw else "3"
+        
+        level_raw = v.get("level", "")
+        level_clean = " | ".join(l.replace("Level ", "").strip() for l in level_raw.split(" | ")) if level_raw else "VUS"
+        
+        drugs = v.get("drug", "None")
+        reference = v.get("evidence", "None")
+        
+        row_cells[0].paragraphs[0].add_run(gene_name)
+        row_cells[1].paragraphs[0].add_run(hgvsg)
+        row_cells[2].paragraphs[0].add_run(cdna)
+        row_cells[3].paragraphs[0].add_run(p_notation)
+        row_cells[4].paragraphs[0].add_run(biomarker_effect)
+        row_cells[5].paragraphs[0].add_run(tier_clean)
+        row_cells[6].paragraphs[0].add_run(level_clean)
+        row_cells[7].paragraphs[0].add_run(drugs)
+        row_cells[8].paragraphs[0].add_run(reference)
         
     doc.add_paragraph() # Spacing
 
