@@ -129,6 +129,20 @@ async function loadReviewData() {
         
         // Initial Table Render
         renderVariantsTable();
+
+        // Restore previously confirmed variants if they exist
+        if (caseData.confirmed_variants) {
+            try {
+                const confirmed = JSON.parse(caseData.confirmed_variants);
+                confirmed.forEach(cv => {
+                    selectedSet.add(cv.hgvsg);
+                });
+                renderVariantsTable(); // Re-render to check correct rows
+                updateProceedButton();
+            } catch (e) {
+                console.error("Failed to restore confirmed variants:", e);
+            }
+        }
         
     } catch (err) {
         showError("Network connection error loading variant review board.");
@@ -487,11 +501,16 @@ function setupListeners() {
                 
                 console.log(`[CLINICAL VARIANTS CONFIRMED] Case ID: CASE-${caseId} | Selected:`, selectedList);
                 
+                // Refresh caseData so it has the confirmed list
+                const updatedCaseResp = await fetch(`/api/cases/${caseId}`);
+                if (updatedCaseResp.ok) {
+                    caseData = await updatedCaseResp.json();
+                }
+                
                 setTimeout(() => {
                     successDiv.classList.add("hidden");
-                    // Optionally close tab on successful confirmation
-                    window.close();
-                }, 1500);
+                    showReportView();
+                }, 1000);
             } else {
                 errorDiv.textContent = data.detail || "Database validation failed.";
                 errorDiv.classList.remove("hidden");
@@ -588,6 +607,9 @@ function setupListeners() {
             document.body.removeChild(link);
         });
     }
+    
+    // Wire up report view listeners
+    setupReportListeners();
 }
 
 function showError(msg) {
@@ -614,6 +636,177 @@ function formatConsequence(consequence) {
         // Title case
         return term.replace(/\b\w/g, c => c.toUpperCase());
     }).join(' & ');
+}
+
+// --- PHASE 4 REPORT GENERATOR WORKSPACE METHODS ---
+
+function showReportView() {
+    document.getElementById("grid-view-section").classList.add("hidden");
+    document.getElementById("dashboard-section").classList.add("hidden");
+    document.getElementById("report-view-section").classList.remove("hidden");
+    populateReportInfo();
+}
+
+function showGridView() {
+    document.getElementById("report-view-section").classList.add("hidden");
+    document.getElementById("grid-view-section").classList.remove("hidden");
+    document.getElementById("dashboard-section").classList.remove("hidden");
+}
+
+function populateReportInfo() {
+    // 1. Demographics
+    document.getElementById("rep-patient-name").textContent = caseData.patient_name;
+    document.getElementById("rep-patient-demog").textContent = `${caseData.patient_age} / ${caseData.patient_sex}`;
+    document.getElementById("rep-patient-indication").textContent = `${caseData.indication_name} (${caseData.indication_doid})`;
+    document.getElementById("rep-patient-refs").textContent = `${caseData.reference_genome} / ${caseData.transcript_db}`;
+
+    // 2. Summary Table of Selected Variants
+    const summaryBody = document.getElementById("report-variants-summary-body");
+    summaryBody.innerHTML = "";
+    
+    // Filter variantsData based on selectedSet
+    const confirmed = variantsData.filter(v => selectedSet.has(v.hgvsg));
+    if (confirmed.length === 0) {
+        summaryBody.innerHTML = `<tr><td colspan="6" class="table-placeholder">No confirmed variants selected. Go back and select variants.</td></tr>`;
+    } else {
+        confirmed.forEach(v => {
+            const tr = document.createElement("tr");
+            
+            // Clean up Tier and Level prefix
+            const tier_clean = v.tier ? v.tier.split(" | ").map(t => t.replace(/tier\s*/i, "").trim()).join(" | ") : "3";
+            const level_clean = v.level ? v.level.split(" | ").map(l => l.replace(/level\s*/i, "").trim()).join(" | ") : "VUS";
+            const drug_clean = v.drug ? v.drug : "None";
+            const type_clean = v.biomarker_type ? v.biomarker_type : "None";
+            
+            tr.innerHTML = `
+                <td><strong class="transcript-ref" style="background-color:rgba(6, 182, 212, 0.07); color:var(--color-secondary); border:1px solid rgba(6, 182, 212, 0.15);">${escapeHtml(v.hgvsg)}</strong></td>
+                <td><strong>${escapeHtml(v.gene)}</strong> <span style="font-family: monospace;">${escapeHtml(formatProteinChange(v.protein))}</span></td>
+                <td><span class="tier-badge tier-${tier_clean.toLowerCase().includes('1') ? '1' : (tier_clean.toLowerCase().includes('2') ? '2' : '3')}">${escapeHtml(tier_clean)}</span></td>
+                <td><span class="level-badge level-${level_clean.toLowerCase()}">${escapeHtml(level_clean)}</span></td>
+                <td>${escapeHtml(drug_clean)}</td>
+                <td><span class="transcript-ref">${escapeHtml(type_clean)}</span></td>
+            `;
+            summaryBody.appendChild(tr);
+        });
+    }
+
+    // 3. Draft Narrative Blocks
+    if (caseData.report_draft) {
+        try {
+            const parsed = JSON.parse(caseData.report_draft);
+            document.getElementById("report-textarea-gene").value = parsed.gene_analysis || "";
+            document.getElementById("report-textarea-variant").value = parsed.variant_narrative || "";
+            document.getElementById("report-textarea-evidence").value = parsed.evidence_records || "";
+        } catch (e) {
+            console.error("Failed to parse report draft JSON:", e);
+        }
+    } else {
+        document.getElementById("report-textarea-gene").value = "";
+        document.getElementById("report-textarea-variant").value = "";
+        document.getElementById("report-textarea-evidence").value = "";
+    }
+}
+
+function setupReportListeners() {
+    const backBtn = document.getElementById("back-to-grid-btn");
+    if (backBtn) {
+        backBtn.addEventListener("click", showGridView);
+    }
+    
+    // Save report draft
+    const saveBtn = document.getElementById("btn-save-report");
+    if (saveBtn) {
+        saveBtn.addEventListener("click", async () => {
+            const errorEl = document.getElementById("report-error");
+            const successEl = document.getElementById("report-success");
+            errorEl.classList.add("hidden");
+            successEl.classList.add("hidden");
+
+            const data = {
+                gene_analysis: document.getElementById("report-textarea-gene").value,
+                variant_narrative: document.getElementById("report-textarea-variant").value,
+                evidence_records: document.getElementById("report-textarea-evidence").value
+            };
+
+            try {
+                const response = await fetch(`/api/cases/${caseId}/report/save`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ report_draft: JSON.stringify(data) })
+                });
+
+                const respData = await response.json();
+                if (response.ok) {
+                    // Update local caseData in memory
+                    caseData.report_draft = JSON.stringify(data);
+                    successEl.textContent = respData.message || "Report draft saved successfully.";
+                    successEl.classList.remove("hidden");
+                    setTimeout(() => successEl.classList.add("hidden"), 3000);
+                } else {
+                    errorEl.textContent = respData.detail || "Failed to save report draft.";
+                    errorEl.classList.remove("hidden");
+                }
+            } catch (err) {
+                errorEl.textContent = "Network error saving report draft.";
+                errorEl.classList.remove("hidden");
+            }
+        });
+    }
+
+    // Generate report
+    const generateBtn = document.getElementById("btn-generate-report");
+    if (generateBtn) {
+        generateBtn.addEventListener("click", async () => {
+            const errorEl = document.getElementById("report-error");
+            const successEl = document.getElementById("report-success");
+            const spinner = document.getElementById("generate-spinner");
+            
+            errorEl.classList.add("hidden");
+            successEl.classList.add("hidden");
+            
+            spinner.classList.remove("hidden");
+            generateBtn.disabled = true;
+            generateBtn.textContent = "Generating...";
+
+            try {
+                const response = await fetch(`/api/cases/${caseId}/report/generate`, {
+                    method: "POST"
+                });
+
+                const respData = await response.json();
+                if (response.ok) {
+                    document.getElementById("report-textarea-gene").value = respData.gene_analysis || "";
+                    document.getElementById("report-textarea-variant").value = respData.variant_narrative || "";
+                    document.getElementById("report-textarea-evidence").value = respData.evidence_records || "";
+                    
+                    // Update in-memory caseData
+                    caseData.report_draft = JSON.stringify(respData);
+                    
+                    successEl.textContent = "Report draft synthesized successfully via local LLM.";
+                    successEl.classList.remove("hidden");
+                    setTimeout(() => successEl.classList.add("hidden"), 3000);
+                } else {
+                    errorEl.textContent = respData.detail || "LLM report generation failed.";
+                    errorEl.classList.remove("hidden");
+                }
+            } catch (err) {
+                errorEl.textContent = "Network error communicating with local LLM service.";
+                errorEl.classList.remove("hidden");
+            } finally {
+                spinner.classList.add("hidden");
+                generateBtn.disabled = false;
+                generateBtn.textContent = "Generate Draft (local LLM)";
+            }
+        });
+    }
+
+    // Download DOCX
+    const docxBtn = document.getElementById("btn-download-docx");
+    if (docxBtn) {
+        docxBtn.addEventListener("click", () => {
+            window.location.href = `/api/cases/${caseId}/report/docx`;
+        });
+    }
 }
 
 

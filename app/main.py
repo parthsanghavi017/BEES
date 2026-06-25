@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db, init_db, ClinicalCase, User
 from app.auth import get_current_user, hash_password, verify_password, create_access_token
-from app.schemas import ClinicalCaseResponse, UserResponse, UserCreate, DashboardStats, VariantConfirmRequest
+from app.schemas import ClinicalCaseResponse, UserResponse, UserCreate, DashboardStats, VariantConfirmRequest, ReportDraftSaveRequest
 from app.pipeline import run_variant_pipeline
 
 # Initialize FastAPI App
@@ -582,7 +582,200 @@ def confirm_case_variants(
     return {"message": f"Successfully logged and saved {len(confirmed_variants)} confirmed variants for CASE-{case_id}."}
 
 
+# --- PHASE 4 LLM SYNTHESIS & REPORTING ENDPOINTS ---
+
+@app.post("/api/cases/{case_id}/report/generate")
+async def generate_case_report(
+    case_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Triggers local LLM synthesis for confirmed variants' narratives.
+    """
+    case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Clinical case not found")
+        
+    if not case.confirmed_variants:
+        raise HTTPException(
+            status_code=400,
+            detail="No confirmed variants exist for this case. Please review and confirm variants first."
+        )
+        
+    confirmed_variants = json.loads(case.confirmed_variants)
+    if not confirmed_variants:
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmed variants list is empty. Please select and confirm variants first."
+        )
+
+    try:
+        from app.llm_service import LlmSynthesisService
+        synthesis = await LlmSynthesisService.synthesize_report(case_id, confirmed_variants)
+        
+        # Pre-populate / Initialize report_draft in DB
+        case.report_draft = json.dumps(synthesis)
+        db.commit()
+        
+        return synthesis
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"LLM Synthesis failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Local LLM service failed to synthesize report: {str(e)}. Make sure Ollama daemon is running ('ollama serve') and model 'medgemma:4b' is downloaded."
+        )
+
+@app.post("/api/cases/{case_id}/report/save")
+def save_case_report_draft(
+    case_id: int,
+    payload: ReportDraftSaveRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Saves manually curated report draft narratives back to the database.
+    """
+    case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Clinical case not found")
+        
+    case.report_draft = payload.report_draft
+    db.commit()
+    return {"message": "Draft report saved successfully."}
+
+@app.get("/api/cases/{case_id}/report/docx")
+def download_case_report_docx(
+    case_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generates and downloads a clean, editable clinical molecular pathology report in DOCX format.
+    """
+    import io
+    from fastapi.responses import StreamingResponse
+    from docx import Document
+    from docx.shared import Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Clinical case not found")
+
+    confirmed_variants = json.loads(case.confirmed_variants) if case.confirmed_variants else []
+    report_draft_parsed = {}
+    if case.report_draft:
+        try:
+            report_draft_parsed = json.loads(case.report_draft)
+        except Exception:
+            pass
+
+    # Build Word document
+    doc = Document()
+    
+    # Title
+    title_p = doc.add_paragraph()
+    title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title_p.add_run("CLINICAL GENOMIC VARIANT INTERPRETATION REPORT")
+    run.font.name = 'Arial'
+    run.font.size = Pt(18)
+    run.font.bold = True
+    run.font.color.rgb = RGBColor(15, 23, 42) # Slate 900
+    
+    # Subtitle
+    sub_p = doc.add_paragraph()
+    sub_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run_sub = sub_p.add_run("Sovereign Genomic Interpretation Pipeline (BEES) • Confidential Report")
+    run_sub.font.name = 'Arial'
+    run_sub.font.size = Pt(10)
+    run_sub.font.italic = True
+    run_sub.font.color.rgb = RGBColor(100, 116, 139) # Slate 500
+
+    # Section 1: Clinical Information
+    h1 = doc.add_heading(level=1)
+    h1.add_run("1. Patient & Case Demographics").font.color.rgb = RGBColor(15, 23, 42)
+    
+    table_info = doc.add_table(rows=5, cols=2)
+    table_info.style = 'Table Grid'
+    
+    info_rows = [
+        ("Case ID", f"CASE-{case.id:04d}"),
+        ("Patient Name", case.patient_name),
+        ("Age / Sex", f"{case.patient_age} / {case.patient_sex}"),
+        ("Indication (DOID)", f"{case.indication_name} ({case.indication_doid})"),
+        ("Genome & Transcript References", f"{case.reference_genome} / {case.transcript_db}")
+    ]
+    
+    for r_idx, (label, val) in enumerate(info_rows):
+        row = table_info.rows[r_idx]
+        row.cells[0].paragraphs[0].add_run(label).font.bold = True
+        row.cells[1].paragraphs[0].add_run(val)
+        
+    doc.add_paragraph() # Spacing
+
+    # Section 2: Summary Table
+    h2 = doc.add_heading(level=1)
+    h2.add_run("2. Variant Classification Summary").font.color.rgb = RGBColor(15, 23, 42)
+    
+    table_summary = doc.add_table(rows=1, cols=6)
+    table_summary.style = 'Table Grid'
+    
+    headers = ["Variant (HGVSg)", "Gene", "Tier", "Level", "Drug(s)", "Biomarker Type"]
+    hdr_cells = table_summary.rows[0].cells
+    for i, h in enumerate(headers):
+        hdr_cells[i].paragraphs[0].add_run(h).font.bold = True
+        
+    for v in confirmed_variants:
+        row_cells = table_summary.add_row().cells
+        row_cells[0].paragraphs[0].add_run(v.get("hgvsg", ""))
+        row_cells[1].paragraphs[0].add_run(f"{v.get('gene', '')} {v.get('protein', '')}")
+        
+        tier_clean = v.get("tier", "").replace("Tier ", "")
+        level_clean = v.get("level", "").replace("Level ", "")
+        
+        row_cells[2].paragraphs[0].add_run(tier_clean)
+        row_cells[3].paragraphs[0].add_run(level_clean)
+        row_cells[4].paragraphs[0].add_run(v.get("drug", "None"))
+        row_cells[5].paragraphs[0].add_run(v.get("biomarker_type", "None"))
+        
+    doc.add_paragraph() # Spacing
+
+    # Section 3: Detailed Section (LLM generated stuff)
+    h3 = doc.add_heading(level=1)
+    h3.add_run("3. Detailed Interpretative Narratives").font.color.rgb = RGBColor(15, 23, 42)
+    
+    # Gene Analysis
+    h3_1 = doc.add_heading(level=2)
+    h3_1.add_run("Gene Analysis").font.color.rgb = RGBColor(71, 85, 105)
+    doc.add_paragraph(report_draft_parsed.get("gene_analysis", "No gene summary has been synthesized."))
+    
+    # Variant Narrative
+    h3_2 = doc.add_heading(level=2)
+    h3_2.add_run("Variant Narrative").font.color.rgb = RGBColor(71, 85, 105)
+    doc.add_paragraph(report_draft_parsed.get("variant_narrative", "No variant narrative has been synthesized."))
+    
+    # Evidence Records
+    h3_3 = doc.add_heading(level=2)
+    h3_3.add_run("Evidence Records & Literature Summaries").font.color.rgb = RGBColor(71, 85, 105)
+    doc.add_paragraph(report_draft_parsed.get("evidence_records", "No evidence records narrative has been synthesized."))
+
+    # Save doc to memory stream
+    file_stream = io.BytesIO()
+    doc.save(file_stream)
+    file_stream.seek(0)
+    
+    filename = f"Case_{case_id}_Clinical_Report.docx"
+    return StreamingResponse(
+        file_stream,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
 # --- FRONTEND ROUTING & STATIC FILES ---
+
 
 # Serve app/static folder for stylesheet, JS files, and ChartJS
 if os.path.exists(STATIC_DIR):

@@ -323,6 +323,11 @@
             color: #64748b;
             border: 1px solid rgba(100, 116, 139, 0.2);
         }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
@@ -342,7 +347,7 @@
         </header>
 
         <!-- TOP DASHBOARD ROW: METADATA & FILTRATION FUNNEL -->
-        <section class="review-dashboard">
+        <section class="review-dashboard" id="dashboard-section">
             <!-- Case Metadata - Horizontal Row -->
             <div class="meta-row">
                 <div class="meta-item">
@@ -437,7 +442,7 @@
         </section>
 
         <!-- MAIN TABLE PANEL -->
-        <main class="review-main">
+        <main class="review-main" id="grid-view-section">
             <!-- Variants Table -->
             <div class="table-container" style="flex: 1; overflow-y: auto; background-color: #0c1222;">
                 <table class="cases-table">
@@ -483,7 +488,111 @@
                 </div>
             </div>
         </main>
+
+        <!-- REPORT GENERATION VIEW (Initially hidden) -->
+        <section id="report-view-section" class="review-main hidden" style="overflow-y: auto; gap: 24px; padding-bottom: 40px; flex: 1;">
+            <!-- Back and action controls -->
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <button type="button" class="btn btn-secondary btn-sm" id="back-to-grid-btn" style="background: rgba(255,255,255,0.03); color: var(--text-primary); border: 1px solid var(--border-color); cursor: pointer; padding: 8px 16px; border-radius: var(--radius-sm);">← Back to Variant Grid</button>
+                <div style="display: flex; gap: 12px;">
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-generate-report" style="background: var(--gradient-accent); color: #0c101b; font-weight: bold; border: none; cursor: pointer; padding: 8px 16px; border-radius: var(--radius-sm); display: flex; align-items: center; gap: 8px;">
+                         <span id="generate-spinner" class="hidden" style="display: inline-block; width: 12px; height: 12px; border: 2px solid #0c101b; border-top: 2px solid transparent; border-radius: 50%; animation: spin 1s linear infinite;"></span>
+                         Generate Draft (local LLM)
+                    </button>
+                    <button type="button" class="btn btn-primary btn-sm" id="btn-save-report" style="background: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); font-weight: bold; cursor: pointer; padding: 8px 16px; border-radius: var(--radius-sm);">Save Draft Report</button>
+                    <button type="button" class="btn btn-primary btn-sm" id="btn-download-docx" style="background: #2563eb; border: 1px solid rgba(37, 99, 235, 0.4); font-weight: bold; cursor: pointer; padding: 8px 16px; border-radius: var(--radius-sm); display: flex; align-items: center; gap: 6px;">
+                         Download DOCX
+                    </button>
+                </div>
+            </div>
+
+            <div id="report-error" class="alert alert-danger hidden"></div>
+            <div id="report-success" class="alert alert-success hidden"></div>
+
+            <!-- Report Layout Workspace -->
+            <div class="report-workspace" style="display: flex; flex-direction: column; gap: 24px;">
+                
+                <!-- 1. Patient Demographics Summary Card -->
+                <div class="funnel-stage" style="border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 20px; background: rgba(255,255,255,0.01); display: block;">
+                    <h3 style="font-size: 1rem; font-weight: 700; color: var(--color-secondary); margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                        <span>📋</span> 1. Clinical Case Metadata
+                    </h3>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                        <div>
+                            <span style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Patient Name</span>
+                            <div style="font-size: 1rem; font-weight: 700;" id="rep-patient-name">-</div>
+                        </div>
+                        <div>
+                            <span style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Age / Sex</span>
+                            <div style="font-size: 1rem; font-weight: 700;" id="rep-patient-demog">-</div>
+                        </div>
+                        <div>
+                            <span style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Clinical Indication</span>
+                            <div style="font-size: 1rem; font-weight: 700;" id="rep-patient-indication">-</div>
+                        </div>
+                        <div>
+                            <span style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">References</span>
+                            <div style="font-size: 0.85rem; font-weight: 700; font-family: monospace;" id="rep-patient-refs">-</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. Selected Variant Summary Table -->
+                <div class="funnel-stage" style="border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 20px; background: rgba(255,255,255,0.01); display: block;">
+                    <h3 style="font-size: 1rem; font-weight: 700; color: var(--color-secondary); margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                        <span>📊</span> 2. Variant Classification Summary
+                    </h3>
+                    <div style="overflow-x: auto;">
+                        <table class="cases-table" style="background: #080c16; border-radius: var(--radius-sm); width: 100%;">
+                            <thead>
+                                <tr>
+                                    <th>Variant (HGVSg)</th>
+                                    <th>Gene</th>
+                                    <th>Tier</th>
+                                    <th>Level</th>
+                                    <th>Drug(s)</th>
+                                    <th>Biomarker Type</th>
+                                </tr>
+                            </thead>
+                            <tbody id="report-variants-summary-body">
+                                <!-- Dynamically populated rows -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- 3. LLM Generated Synthesis Section -->
+                <div class="funnel-stage" style="border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 20px; background: rgba(255,255,255,0.01); display: flex; flex-direction: column; gap: 20px;">
+                    <h3 style="font-size: 1rem; font-weight: 700; color: var(--color-secondary); margin-bottom: 4px; display: flex; align-items: center; gap: 8px;">
+                        <span>✍️</span> 3. Detailed Interpretative Narratives (Editable)
+                    </h3>
+                    <span style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px; display: block; margin-top: -12px;">
+                        Curate and customize the narrative blocks before downloading.
+                    </span>
+
+                    <!-- Gene Summary Section -->
+                    <div style="display: flex; flex-direction: column; gap: 6px;">
+                        <label style="font-size: 0.85rem; font-weight: 700; color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.05em;">Gene Analysis Narrative</label>
+                        <textarea id="report-textarea-gene" style="width: 100%; min-height: 140px; background: #080c16; color: #f1f5f9; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 12px; font-family: sans-serif; font-size: 0.9rem; line-height: 1.6; resize: vertical;" placeholder="Gene functional and biology summary..."></textarea>
+                    </div>
+
+                    <!-- Variant Narrative Section -->
+                    <div style="display: flex; flex-direction: column; gap: 6px;">
+                        <label style="font-size: 0.85rem; font-weight: 700; color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.05em;">Variant Pathology Narrative</label>
+                        <textarea id="report-textarea-variant" style="width: 100%; min-height: 140px; background: #080c16; color: #f1f5f9; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 12px; font-family: sans-serif; font-size: 0.9rem; line-height: 1.6; resize: vertical;" placeholder="Variant mutational details narrative..."></textarea>
+                    </div>
+
+                    <!-- Evidence Records Section -->
+                    <div style="display: flex; flex-direction: column; gap: 6px;">
+                        <label style="font-size: 0.85rem; font-weight: 700; color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.05em;">Evidence & Literature Summaries</label>
+                        <textarea id="report-textarea-evidence" style="width: 100%; min-height: 180px; background: #080c16; color: #f1f5f9; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 12px; font-family: sans-serif; font-size: 0.9rem; line-height: 1.6; resize: vertical;" placeholder="Evidence summaries and literature weaving..."></textarea>
+                    </div>
+                </div>
+
+            </div>
+        </section>
     </div>
+
 
     <!-- Script imports -->
     <script src="/static/review.js"></script>

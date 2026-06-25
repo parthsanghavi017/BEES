@@ -56,6 +56,7 @@ class ClinicalCase(Base):
     total_input_variants = Column(Integer, nullable=True)
     passed_impact_variants = Column(Integer, nullable=True)
     passed_af_variants = Column(Integer, nullable=True)
+    report_draft = Column(String, nullable=True)  # JSON string containing Gene Analysis, Variant Narrative, and Evidence blocks
 
 # Encrypted SQLite database via SQLCipher setup
 EvidenceBase = declarative_base()
@@ -91,8 +92,20 @@ EvidenceSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=evid
 def init_db():
     """
     Creates all database tables defined in the schema.
+    Also dynamically handles schema upgrades for SQLite (adding report_draft column).
     """
     Base.metadata.create_all(bind=engine)
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            res = conn.execute(text("PRAGMA table_info(clinical_cases)"))
+            columns = [row[1] for row in res]
+            if "report_draft" not in columns:
+                conn.execute(text("ALTER TABLE clinical_cases ADD COLUMN report_draft TEXT"))
+                # Commit if necessary depending on transactional context, SQLite usually autocommits DDL
+                print("[DATABASE] Successfully added report_draft column to clinical_cases table.")
+    except Exception as e:
+        print(f"[DATABASE] Schema upgrade warning: {e}")
 
 def init_evidence_db():
     """

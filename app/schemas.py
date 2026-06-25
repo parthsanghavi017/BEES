@@ -84,6 +84,7 @@ class ClinicalCaseResponse(BaseModel):
     total_input_variants: Optional[int] = None
     passed_impact_variants: Optional[int] = None
     passed_af_variants: Optional[int] = None
+    report_draft: Optional[str] = None
 
     class Config:
         orm_mode = True
@@ -96,3 +97,6 @@ class DashboardStats(BaseModel):
 
 class VariantConfirmRequest(BaseModel):
     selected_hgvsg: List[str]
+
+class ReportDraftSaveRequest(BaseModel):
+    report_draft: str
