@@ -269,23 +269,32 @@
             overflow: visible;
         }
 
-        .btn-expand-toggle {
-            background: rgba(255, 255, 255, 0.05);
-            color: var(--color-secondary);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: var(--radius-sm);
-            padding: 3px 8px;
-            font-size: 0.7rem;
-            font-weight: 600;
+        .expandable-row {
             cursor: pointer;
-            transition: all 0.2s ease;
         }
 
-        .btn-expand-toggle:hover {
-            background: rgba(6, 182, 212, 0.15);
-            border-color: rgba(6, 182, 212, 0.3);
-            color: #ffffff;
-            box-shadow: 0 0 6px rgba(6, 182, 212, 0.2);
+        .expandable-row:hover td {
+            background-color: rgba(255, 255, 255, 0.02) !important;
+        }
+
+        .matches-indicator {
+            margin-top: 4px;
+            font-size: 0.7rem;
+            color: var(--color-secondary);
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+        }
+
+        .chevron-icon {
+            display: inline-block;
+            transition: transform 0.2s ease;
+            font-size: 0.6rem;
+            margin-right: 4px;
+        }
+
+        .row-expanded .chevron-icon {
+            transform: rotate(180deg);
         }
 
         .source-badge {

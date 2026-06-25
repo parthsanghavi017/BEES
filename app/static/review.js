@@ -181,7 +181,18 @@ function renderVariantsTable() {
         const matchCount = v.tier ? v.tier.split(" | ").length : 0;
         let geneCellContent = `<strong>${escapeHtml(v.gene)}</strong>`;
         if (matchCount > 3) {
-            geneCellContent += `<div style="margin-top: 6px;"><button type="button" class="btn-expand-toggle" onclick="toggleRowExpand(this)" data-count="${matchCount}">Show all ${matchCount} matches</button></div>`;
+            tr.classList.add("expandable-row");
+            geneCellContent += `<div class="matches-indicator"><span class="chevron-icon">▼</span> ${matchCount} matches</div>`;
+        }
+
+        if (matchCount > 3) {
+            tr.addEventListener("click", (e) => {
+                // Ignore clicks on checkbox, links, buttons, or inputs
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'A' || e.target.tagName === 'BUTTON' || e.target.closest('a') || e.target.closest('input') || e.target.closest('button')) {
+                    return;
+                }
+                tr.classList.toggle("row-expanded");
+            });
         }
 
         tr.innerHTML = `
@@ -584,15 +595,5 @@ function formatConsequence(consequence) {
     }).join(' & ');
 }
 
-window.toggleRowExpand = function(btn) {
-    const tr = btn.closest("tr");
-    if (tr.classList.contains("row-expanded")) {
-        tr.classList.remove("row-expanded");
-        const count = btn.getAttribute("data-count");
-        btn.textContent = `Show all ${count} matches`;
-    } else {
-        tr.classList.add("row-expanded");
-        btn.textContent = "Show less";
-    }
-};
+
 
