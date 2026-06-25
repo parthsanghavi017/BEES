@@ -19,11 +19,11 @@ def parse_highest_impact_ann(ann_field_str):
     Parses the ANN field string from Jannovar and returns the details of the 
     most deleterious transcript annotation based on the IMPACT score.
     
-    ANN Format: Allele|Annotation|Impact|GeneName|GeneID|FeatureType|FeatureID|...
-    Returns: (impact_score, impact_str, gene_name, cdna_change, protein_change, transcript_id)
+    ANN Format: Allele|Annotation|Impact|GeneName|GeneID|FeatureType|FeatureID|TranscriptBiotype|ExonRank/Total|...
+    Returns: (impact_score, impact_str, consequence_str, gene_name, cdna_change, protein_change, transcript_id, exon_rank)
     """
     if not ann_field_str:
-        return (0, "MODIFIER", "Unknown", ".", ".", ".")
+        return (0, "MODIFIER", ".", "Unknown", ".", ".", ".", ".")
         
     highest_score = -1
     best_ann = None
@@ -41,15 +41,17 @@ def parse_highest_impact_ann(ann_field_str):
             highest_score = score
             best_ann = {
                 "impact": impact,
+                "consequence": parts[1].strip() if parts[1].strip() else ".",
                 "gene": parts[3].strip(),
                 "cdna": parts[9].strip() if parts[9].strip() else ".",
                 "protein": parts[10].strip() if parts[10].strip() else ".",
-                "transcript_id": parts[6].strip() if parts[6].strip() else "."
+                "transcript_id": parts[6].strip() if parts[6].strip() else ".",
+                "exon": parts[8].strip() if parts[8].strip() else "."
             }
             
     if best_ann:
-        return (highest_score, best_ann["impact"], best_ann["gene"], best_ann["cdna"], best_ann["protein"], best_ann["transcript_id"])
-    return (0, "MODIFIER", "Unknown", ".", ".", ".")
+        return (highest_score, best_ann["impact"], best_ann["consequence"], best_ann["gene"], best_ann["cdna"], best_ann["protein"], best_ann["transcript_id"], best_ann["exon"])
+    return (0, "MODIFIER", ".", "Unknown", ".", ".", ".", ".")
 
 def run_variant_pipeline(case_id: int):
     """
@@ -118,7 +120,7 @@ def run_variant_pipeline(case_id: int):
         for record in vcf_reader:
             total_count += 1
             ann_field = record.INFO.get("ANN")
-            score, impact, _, _, _, _ = parse_highest_impact_ann(ann_field)
+            score, impact, _, _, _, _, _, _ = parse_highest_impact_ann(ann_field)
             
             # Filter criteria: keep only HIGH (score 4) and MODERATE (score 3)
             if score >= 3:
@@ -172,7 +174,7 @@ def run_variant_pipeline(case_id: int):
 
                 # Parse annotation details for surviving variants
                 ann_field = record.INFO.get("ANN")
-                _, impact, gene, cdna, protein, transcript_id = parse_highest_impact_ann(ann_field)
+                _, impact, consequence, gene, cdna, protein, transcript_id, exon = parse_highest_impact_ann(ann_field)
                 
                 # Format HGVSg: Chr:PosRef>Alt (VCF is 1-based, cyvcf2 POS is 0-based)
                 # Take the first ALT allele
@@ -187,7 +189,9 @@ def run_variant_pipeline(case_id: int):
                     "transcript_type": case.transcript_db,
                     "transcript_id": transcript_id,
                     "impact": impact,
-                    "gnomad_af": af_val
+                    "consequence": consequence,
+                    "gnomad_af": af_val,
+                    "exon": exon
                 })
                 
             vcf_anno_reader.close()

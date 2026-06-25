@@ -6,6 +6,48 @@ let selectedSet = new Set();
 let currentSortCol = null;
 let currentSortDir = 'asc'; // 'asc' or 'desc'
 
+function formatBadgeList(str, type) {
+    if (!str || str === "None" || str === "none") {
+        if (type === 'tier') return `<span class="tier-badge tier-3">Tier 3</span>`;
+        if (type === 'level') return `<span class="level-badge level-vus">Level VUS</span>`;
+        if (type === 'source') return `<span class="source-badge source-none">None</span>`;
+        return `<span style="color: var(--text-muted);">None</span>`;
+    }
+    
+    return str.split(" | ").map(item => {
+        const val = item.trim();
+        if (type === 'tier') {
+            const cls = val.toLowerCase().replace(" ", "-");
+            return `<span class="tier-badge ${cls}">${val}</span>`;
+        }
+        if (type === 'source') {
+            const cls = "source-" + val.toLowerCase().replace(" ", "-");
+            return `<span class="source-badge ${cls}">${val}</span>`;
+        }
+        if (type === 'level') {
+            const cls = val.toLowerCase().replace(" ", "-");
+            return `<span class="level-badge ${cls}">${val}</span>`;
+        }
+        if (type === 'biomarker') {
+            return `<span class="transcript-ref" style="background-color:rgba(255,255,255,0.03); color:#e2e8f0; border:1px solid rgba(255,255,255,0.08);">${val}</span>`;
+        }
+        if (type === 'evidence') {
+            return val.split(";").map(subItem => {
+                const trimmed = subItem.trim();
+                if (trimmed.toUpperCase().startsWith("PMID:")) {
+                    const id = trimmed.replace(/pmid:/i, "");
+                    return `<a href="https://pubmed.ncbi.nlm.nih.gov/${id}" target="_blank" class="transcript-ref" style="color:var(--color-secondary); text-decoration:none; border-bottom: 1px dashed var(--color-secondary); padding: 1px 0;">${trimmed}</a>`;
+                }
+                if (trimmed.toUpperCase() === "ONCOKB") {
+                    return `<a href="https://www.oncokb.org/" target="_blank" class="transcript-ref" style="color:var(--color-secondary); text-decoration:none; border-bottom: 1px dashed var(--color-secondary); padding: 1px 0;">OncoKB</a>`;
+                }
+                return `<span style="font-family: monospace;">${trimmed}</span>`;
+            }).join("<span style='color:var(--text-muted); margin:0 3px;'>;</span>");
+        }
+        return `<strong>${val}</strong>`;
+    }).join("<span style='color:var(--text-muted); margin:0 4px;'>|</span>");
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     extractCaseId();
     if (caseId) {
@@ -53,8 +95,16 @@ async function loadReviewData() {
         
         variantsData = await varResp.json();
         
+        // Sort by Tier by default (Tier 1 > Tier 2 > Tier 3)
+        currentSortCol = 'tier';
+        currentSortDir = 'asc';
+        sortVariantsData('tier');
+        
         // Render Funnel with DB statistics
         renderFunnel();
+        
+        // Render Match Statistics
+        renderStatistics();
         
         // Initial Table Render
         renderVariantsTable();
@@ -115,7 +165,7 @@ function renderVariantsTable() {
     if (variantsData.length === 0) {
         tableBody.innerHTML = `
             <tr>
-                <td colspan="9" class="table-placeholder">Zero genomic variants survived the hard-filtering checks for this clinical case.</td>
+                <td colspan="16" class="table-placeholder">Zero genomic variants survived the hard-filtering checks for this clinical case.</td>
             </tr>`;
         return;
     }
@@ -125,20 +175,34 @@ function renderVariantsTable() {
         
         const isChecked = selectedSet.has(v.hgvsg) ? "checked" : "";
         const afStr = v.gnomad_af === 0 ? "Novel (0.0000)" : v.gnomad_af.toFixed(5);
-        const impactClass = v.impact.toLowerCase() === "high" ? "impact-high" : "impact-moderate";
+        const impactClass = v.impact && v.impact.toLowerCase() === "high" ? "impact-high" : "impact-moderate";
+        const consequenceText = v.consequence ? formatConsequence(v.consequence) : (v.impact || "Unknown");
+
+        const matchCount = v.tier ? v.tier.split(" | ").length : 0;
+        let geneCellContent = `<strong>${escapeHtml(v.gene)}</strong>`;
+        if (matchCount > 3) {
+            geneCellContent += `<div style="margin-top: 6px;"><button type="button" class="btn-expand-toggle" onclick="toggleRowExpand(this)" data-count="${matchCount}">Show all ${matchCount} matches</button></div>`;
+        }
 
         tr.innerHTML = `
             <td style="text-align: center;">
                 <input type="checkbox" class="variant-select" data-hgvsg="${v.hgvsg}" ${isChecked}>
             </td>
             <td><strong class="transcript-ref" style="background-color:rgba(6, 182, 212, 0.07); color:var(--color-secondary); border:1px solid rgba(6, 182, 212, 0.15);">${v.hgvsg}</strong></td>
-            <td><strong>${escapeHtml(v.gene)}</strong></td>
+            <td>${geneCellContent}</td>
             <td><span style="font-family: monospace;">${escapeHtml(v.cdna)}</span></td>
             <td><span style="font-family: monospace; font-weight: bold; color: #f1f5f9;">${escapeHtml(v.protein)}</span></td>
             <td><span class="transcript-ref">${v.transcript_type}</span></td>
             <td><span style="font-family: monospace;">${escapeHtml(v.transcript_id)}</span></td>
-            <td><span class="impact-badge ${impactClass}">${v.impact}</span></td>
+            <td><span class="impact-badge ${impactClass}">${consequenceText}</span></td>
             <td><span style="font-family: monospace; font-weight: 600; color: ${v.gnomad_af === 0 ? '#10b981' : '#94a3b8'}">${afStr}</span></td>
+            <td><div class="clinical-container">${formatBadgeList(v.tier, 'tier')}</div></td>
+            <td><div class="clinical-container">${formatBadgeList(v.level, 'level')}</div></td>
+            <td><div class="clinical-container">${formatBadgeList(v.biomarker_type, 'biomarker')}</div></td>
+            <td><div class="clinical-container">${formatBadgeList(v.evidence, 'evidence')}</div></td>
+            <td><div class="clinical-container">${formatBadgeList(v.drug, 'drug')}</div></td>
+            <td><div class="clinical-container">${formatBadgeList(v.response, 'response')}</div></td>
+            <td><div class="clinical-container">${formatBadgeList(v.evidence_source, 'source')}</div></td>
         `;
         tableBody.appendChild(tr);
     });
@@ -185,16 +249,7 @@ function updateProceedButton() {
 
 // --- CLIENT-SIDE SORTING ENGINE ---
 
-function handleSort(column) {
-    if (currentSortCol === column) {
-        // Toggle direction
-        currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
-    } else {
-        currentSortCol = column;
-        currentSortDir = 'asc';
-    }
-
-    // Sort variants array
+function sortVariantsData(column) {
     variantsData.sort((a, b) => {
         let valA = a[column];
         let valB = b[column];
@@ -204,14 +259,67 @@ function handleSort(column) {
             return compareHgvsg(valA, valB) * (currentSortDir === 'asc' ? 1 : -1);
         }
 
+        if (column === 'consequence') {
+            valA = valA ? formatConsequence(valA) : (a.impact || "");
+            valB = valB ? formatConsequence(valB) : (b.impact || "");
+        }
+
+        if (column === 'tier') {
+            const getTierRank = (tierStr) => {
+                if (!tierStr) return 99;
+                const ranks = tierStr.split(" | ").map(t => {
+                    const cleanT = t.toString().toUpperCase();
+                    if (cleanT.includes("1")) return 1;
+                    if (cleanT.includes("2")) return 2;
+                    if (cleanT.includes("3")) return 3;
+                    return 4;
+                });
+                return Math.min(...ranks);
+            };
+            return (getTierRank(valA) - getTierRank(valB)) * (currentSortDir === 'asc' ? 1 : -1);
+        }
+
+        if (column === 'level') {
+            const getLevelRank = (levelStr) => {
+                if (!levelStr) return 99;
+                const ranks = levelStr.split(" | ").map(l => {
+                    const cleanL = l.toString().toUpperCase();
+                    if (cleanL.includes("LEVEL A")) return 1;
+                    if (cleanL.includes("LEVEL B")) return 2;
+                    if (cleanL.includes("LEVEL C")) return 3;
+                    if (cleanL.includes("LEVEL D")) return 4;
+                    if (cleanL.includes("LEVEL VUS")) return 5;
+                    return 6;
+                });
+                return Math.min(...ranks);
+            };
+            return (getLevelRank(valA) - getLevelRank(valB)) * (currentSortDir === 'asc' ? 1 : -1);
+        }
+
         // Standard comparisons
         if (typeof valA === 'string') {
-            return valA.localeCompare(valB) * (currentSortDir === 'asc' ? 1 : -1);
+            const strA = valA || "";
+            const strB = valB || "";
+            return strA.localeCompare(strB) * (currentSortDir === 'asc' ? 1 : -1);
         } else {
             // numbers (e.g. allele freq)
-            return (valA - valB) * (currentSortDir === 'asc' ? 1 : -1);
+            const numA = typeof valA === 'number' ? valA : 0;
+            const numB = typeof valB === 'number' ? valB : 0;
+            return (numA - numB) * (currentSortDir === 'asc' ? 1 : -1);
         }
     });
+}
+
+function handleSort(column) {
+    if (currentSortCol === column) {
+        // Toggle direction
+        currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+        currentSortCol = column;
+        currentSortDir = 'asc';
+    }
+
+    sortVariantsData(column);
 
     // Update sorting arrow symbols in headers
     updateSortHeaders();
@@ -259,7 +367,7 @@ function compareHgvsg(a, b) {
 }
 
 function updateSortHeaders() {
-    const columns = ['hgvsg', 'gene', 'cdna', 'protein', 'transcript_id', 'impact', 'gnomad_af'];
+    const columns = ['hgvsg', 'gene', 'cdna', 'protein', 'transcript_id', 'consequence', 'gnomad_af', 'tier', 'level', 'biomarker_type', 'evidence', 'drug', 'response', 'evidence_source'];
     columns.forEach(col => {
         const span = document.getElementById(`sort-${col}`);
         if (span) {
@@ -272,6 +380,31 @@ function updateSortHeaders() {
             }
         }
     });
+}
+
+function renderStatistics() {
+    const total = variantsData.length;
+    let localCount = 0;
+    let civicCount = 0;
+    let unmatchedCount = 0;
+
+    variantsData.forEach(v => {
+        const src = v.evidence_source || "";
+        if (src.includes("Local DB")) {
+            localCount++;
+        }
+        if (src.includes("CIViC")) {
+            civicCount++;
+        }
+        if (!src.includes("Local DB") && !src.includes("CIViC")) {
+            unmatchedCount++;
+        }
+    });
+
+    document.getElementById("stats-total-variants").textContent = total.toLocaleString();
+    document.getElementById("stats-local-matches").textContent = localCount.toLocaleString();
+    document.getElementById("stats-civic-matches").textContent = civicCount.toLocaleString();
+    document.getElementById("stats-unmatched").textContent = unmatchedCount.toLocaleString();
 }
 
 // --- EVENT LISTENERS ---
@@ -339,6 +472,90 @@ function setupListeners() {
             updateProceedButton();
         }
     });
+
+    // Download Exploded TSV handler
+    const downloadTsvBtn = document.getElementById("download-tsv-button");
+    if (downloadTsvBtn) {
+        downloadTsvBtn.addEventListener("click", () => {
+            if (variantsData.length === 0) {
+                alert("No variant data available to download.");
+                return;
+            }
+            
+            // TSV Header columns
+            const headers = [
+                "HGVSg", "Gene", "cDNA Change", "Protein Change", 
+                "Transcript Database", "Transcript ID", "Consequence", 
+                "Allele Frequency (gnomAD)", "Tier", "Level", 
+                "Biomarker Type", "Evidence (PMID/OncoKB)", "Drug", 
+                "Response", "Source"
+            ];
+            
+            let rows = [headers.join("\t")];
+            
+            variantsData.forEach(v => {
+                const cleanStr = (s) => (s === null || s === undefined) ? "" : s.toString().trim();
+                
+                const hgvsg = cleanStr(v.hgvsg);
+                const gene = cleanStr(v.gene);
+                const cdna = cleanStr(v.cdna);
+                const protein = cleanStr(v.protein);
+                const tx_type = cleanStr(v.transcript_type);
+                const tx_id = cleanStr(v.transcript_id);
+                const consequence = cleanStr(v.consequence);
+                const af = cleanStr(v.gnomad_af);
+                
+                // Split pipe-separated columns
+                const tiers = cleanStr(v.tier).split(" | ");
+                const levels = cleanStr(v.level).split(" | ");
+                const bts = cleanStr(v.biomarker_type).split(" | ");
+                const evs = cleanStr(v.evidence).split(" | ");
+                const drugs = cleanStr(v.drug).split(" | ");
+                const responses = cleanStr(v.response).split(" | ");
+                const sources = cleanStr(v.evidence_source).split(" | ");
+                
+                // Determine the number of exploded rows (maximum list length)
+                const N = Math.max(
+                    tiers.length, levels.length, bts.length, 
+                    evs.length, drugs.length, responses.length, sources.length
+                );
+                
+                for (let i = 0; i < N; i++) {
+                    const rowTier = cleanStr(tiers[i] || "");
+                    const rowLevel = cleanStr(levels[i] || "");
+                    const rowBt = cleanStr(bts[i] || "");
+                    const rowEv = cleanStr(evs[i] || "");
+                    const rowDrug = cleanStr(drugs[i] || "");
+                    const rowResp = cleanStr(responses[i] || "");
+                    const rowSrc = cleanStr(sources[i] || "");
+                    
+                    const rowData = [
+                        hgvsg, gene, cdna, protein, 
+                        tx_type, tx_id, consequence, af,
+                        rowTier, rowLevel, rowBt, rowEv, 
+                        rowDrug, rowResp, rowSrc
+                    ];
+                    
+                    rows.push(rowData.join("\t"));
+                }
+            });
+            
+            // Build TSV blob and trigger download
+            const tsvContent = rows.join("\n");
+            const blob = new Blob([tsvContent], { type: "text/tab-separated-values;charset=utf-8;" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.setAttribute("href", url);
+            
+            // File naming: Case_[ID]_exploded_variants.tsv
+            const fileName = `Case_${caseId}_exploded_variants.tsv`;
+            link.setAttribute("download", fileName);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+    }
 }
 
 function showError(msg) {
@@ -356,3 +573,26 @@ function escapeHtml(str) {
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
 }
+
+function formatConsequence(consequence) {
+    if (!consequence) return "Unknown";
+    return consequence.split('&').map(part => {
+        let term = part.replace(/_variant$/i, "");
+        term = term.replace(/_/g, " ");
+        // Title case
+        return term.replace(/\b\w/g, c => c.toUpperCase());
+    }).join(' & ');
+}
+
+window.toggleRowExpand = function(btn) {
+    const tr = btn.closest("tr");
+    if (tr.classList.contains("row-expanded")) {
+        tr.classList.remove("row-expanded");
+        const count = btn.getAttribute("data-count");
+        btn.textContent = `Show all ${count} matches`;
+    } else {
+        tr.classList.add("row-expanded");
+        btn.textContent = "Show less";
+    }
+};
+

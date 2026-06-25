@@ -52,9 +52,41 @@ class ClinicalCase(Base):
     status = Column(String, default="Pending", nullable=False)  # Pending, Processing, Completed, Failed
     status_message = Column(String, nullable=True)  # Error details if failed
     filtered_variants = Column(String, nullable=True)  # Serialized JSON of surviving variants
+    confirmed_variants = Column(String, nullable=True)  # Serialized JSON of curated/confirmed variants (with evidence)
     total_input_variants = Column(Integer, nullable=True)
     passed_impact_variants = Column(Integer, nullable=True)
     passed_af_variants = Column(Integer, nullable=True)
+
+# Encrypted SQLite database via SQLCipher setup
+EvidenceBase = declarative_base()
+
+class LocalEvidence(EvidenceBase):
+    """
+    LocalEvidence model representing curated precision oncology variant evidence.
+    Encrypted at rest using SQLCipher and SQLAlchemy.
+    """
+    __tablename__ = "local_evidence"
+
+    id = Column(Integer, primary_key=True, index=True)
+    gene = Column(String, index=True, nullable=False)
+    alteration = Column(String, index=True, nullable=False)
+    cancer = Column(String, nullable=False)
+    doid = Column(String, index=True, nullable=False)
+    drug = Column(String, nullable=True)
+    biomarker_type = Column(String, nullable=True)
+    response = Column(String, nullable=True)
+    tier = Column(String, nullable=False)
+    level = Column(String, nullable=False)
+    pmids = Column(String, nullable=True)
+
+EVIDENCE_PASSPHRASE = os.getenv("SQLCIPHER_PASSPHRASE", "bees_secure_evidence_cipher_key_2026")
+db_dir = os.path.dirname(os.path.abspath(__file__))
+evidence_db_path = os.path.join(os.path.dirname(db_dir), "Var_DB", "clinical_evidence.db")
+os.makedirs(os.path.dirname(evidence_db_path), exist_ok=True)
+EVIDENCE_DATABASE_URL = f"sqlite+pysqlcipher://:{EVIDENCE_PASSPHRASE}@/{evidence_db_path}"
+
+evidence_engine = create_engine(EVIDENCE_DATABASE_URL)
+EvidenceSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=evidence_engine)
 
 def init_db():
     """
@@ -62,12 +94,28 @@ def init_db():
     """
     Base.metadata.create_all(bind=engine)
 
+def init_evidence_db():
+    """
+    Creates the encrypted local evidence table.
+    """
+    EvidenceBase.metadata.create_all(bind=evidence_engine)
+
 def get_db():
     """
     FastAPI dependency that provides a transactional database session scope.
     Ensures the session is closed after the request completes.
     """
     db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def get_evidence_db():
+    """
+    FastAPI dependency that provides a transactional session scope for the evidence DB.
+    """
+    db = EvidenceSessionLocal()
     try:
         yield db
     finally:

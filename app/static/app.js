@@ -855,7 +855,8 @@ function renderVariantReviewTable(variants) {
         const tr = document.createElement("tr");
         
         const afStr = v.gnomad_af === 0 ? "Novel (0.0000)" : v.gnomad_af.toFixed(5);
-        const impactClass = v.impact.toLowerCase() === "high" ? "impact-high" : "impact-moderate";
+        const impactClass = v.impact && v.impact.toLowerCase() === "high" ? "impact-high" : "impact-moderate";
+        const consequenceText = v.consequence ? formatConsequence(v.consequence) : (v.impact || "Unknown");
 
         tr.innerHTML = `
             <td style="text-align: center;">
@@ -867,7 +868,7 @@ function renderVariantReviewTable(variants) {
             <td><span style="font-family: monospace; font-weight: bold; color: #f1f5f9;">${escapeHtml(v.protein)}</span></td>
             <td><span class="transcript-ref">${v.transcript_type}</span></td>
             <td><span style="font-family: monospace;">${escapeHtml(v.transcript_id)}</span></td>
-            <td><span class="impact-badge ${impactClass}">${v.impact}</span></td>
+            <td><span class="impact-badge ${impactClass}">${consequenceText}</span></td>
             <td><span style="font-family: monospace; font-weight: 600; color: ${v.gnomad_af === 0 ? '#10b981' : '#94a3b8'}">${afStr}</span></td>
         `;
         tableBody.appendChild(tr);
@@ -992,4 +993,14 @@ function escapeHtml(str) {
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
+}
+
+function formatConsequence(consequence) {
+    if (!consequence) return "Unknown";
+    return consequence.split('&').map(part => {
+        let term = part.replace(/_variant$/i, "");
+        term = term.replace(/_/g, " ");
+        // Title case
+        return term.replace(/\b\w/g, c => c.toUpperCase());
+    }).join(' & ');
 }

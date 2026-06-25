@@ -42,9 +42,14 @@ except Exception as e:
 @app.on_event("startup")
 def on_startup():
     """
-    Initializes the database schema on server startup.
+    Initializes the database schema and preloads civicpy cache on server startup.
     """
     init_db()
+    try:
+        from app.civic_client import preload_civic_cache
+        preload_civic_cache()
+    except Exception as e:
+        print(f"Warning: Failed to preload civicpy cache: {e}")
 
 # --- AUTHENTICATION ENDPOINTS ---
 
@@ -366,13 +371,14 @@ def process_case(
     return {"message": "Genomic analysis triggered successfully.", "status": case.status}
 
 @app.get("/api/cases/{case_id}/variants")
-def get_case_variants(
+async def get_case_variants(
     case_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Returns the parsed, surviving variants of a completed case.
+    Returns the parsed, surviving variants of a completed case, decorated with
+    computed Tier and Level based on Local DB (SQLCipher) or CIViC MCP server.
     """
     case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
     if not case:
@@ -387,7 +393,162 @@ def get_case_variants(
     if not case.filtered_variants:
         return []
 
-    return json.loads(case.filtered_variants)
+    variants = json.loads(case.filtered_variants)
+    
+    # -------------------------------------------------------------
+    # PHASE 3: Standardisation & Variant Tiering (AMP/ASCO/CAP)
+    # -------------------------------------------------------------
+    from app.database import EvidenceSessionLocal, LocalEvidence
+    from app.tiering import calculate_variant_tier
+
+    def normalize_alteration(alt):
+        if not alt:
+            return ""
+        alt = alt.strip()
+        if alt.startswith("p.") or alt.startswith("c."):
+            alt = alt[2:]
+        alt = alt.replace("(", "").replace(")", "").replace("[", "").replace("]", "")
+        alt = alt.strip()
+        if not alt or alt in (".", "?", "=", "unknown", "Unknown", "N/A", "n/a"):
+            return ""
+        return alt
+
+    def query_local_db_sync(gene: str, protein: str, cdna: str, consequence: str, exon: str) -> list:
+        records = []
+        ev_session = EvidenceSessionLocal()
+        try:
+            db_records = ev_session.query(LocalEvidence).filter(
+                LocalEvidence.gene.ilike(gene.strip())
+            ).all()
+            from app.civic_client import matches_variant, standardize_pmids
+            for r in db_records:
+                if matches_variant(gene, protein, cdna, consequence, exon, r.alteration):
+                    raw_pmids = standardize_pmids(r.pmids if r.pmids else "None")
+                    first_pmid = raw_pmids.split(";")[0].strip() if raw_pmids else "OncoKB"
+                    if not first_pmid:
+                        first_pmid = "OncoKB"
+                    records.append({
+                        "tier": r.tier,
+                        "level": r.level,
+                        "biomarker_type": r.biomarker_type if r.biomarker_type else "None",
+                        "cancer": r.cancer,
+                        "doid": r.doid,
+                        "drug": r.drug if r.drug else "None",
+                        "response": r.response if r.response else "None",
+                        "pmids": first_pmid,
+                        "source": "Local DB"
+                    })
+        except Exception as e:
+            print(f"Error querying LocalEvidence: {e}")
+        finally:
+            ev_session.close()
+        return records
+
+    needs_save = True
+    
+    # Process sequentially in main thread to avoid C extension segmentation faults (pysam is not thread-safe)
+    for variant in variants:
+        p_alt = variant.get("protein", "")
+        c_alt = variant.get("cdna", "")
+        gene = variant.get("gene", "")
+        consequence = variant.get("consequence", "")
+        exon = variant.get("exon", "")
+            
+        # 1. Query Local Database (SQLCipher)
+        local_records = query_local_db_sync(gene, p_alt, c_alt, consequence, exon)
+        
+        # 2. Query civicpy client
+        from app.civic_client import fetch_civic_evidence
+        civic_records = fetch_civic_evidence(gene, p_alt, c_alt, consequence, exon)
+        
+        # 3. Apply Indication Tiering to all matching records
+        class DummyRecord:
+            def __init__(self, doid, tier, level):
+                self.doid = doid
+                self.tier = tier
+                self.level = level
+
+        combined_matches = []
+        # Use a simplified alteration query for indication rules
+        query_alt = p_alt if p_alt else c_alt
+        for r in local_records + civic_records:
+            dummy = DummyRecord(r["doid"], r["tier"], r["level"])
+            # Apply Indication rules
+            adjusted_tier, adjusted_level = calculate_variant_tier(
+                gene, query_alt, case.indication_doid, dummy
+            )
+            r["tier"] = adjusted_tier
+            r["level"] = adjusted_level
+            combined_matches.append(r)
+            
+        # 5. Deduplicate matching records based on clinical keys
+        seen = set()
+        unique_matches = []
+        for m in combined_matches:
+            t_val = m["tier"].strip() if m["tier"] else "Tier 3"
+            l_val = m["level"].strip() if m["level"] else "Level VUS"
+            bt_val = m["biomarker_type"].strip().lower() if m["biomarker_type"] else "none"
+            pmid_val = m["pmids"].strip() if m["pmids"] else "none"
+            drug_val = m["drug"].strip().lower() if m["drug"] else "none"
+            resp_val = m["response"].strip().lower() if m["response"] else "none"
+            
+            key = (t_val, l_val, bt_val, pmid_val, drug_val, resp_val)
+            if key not in seen:
+                seen.add(key)
+                unique_matches.append(m)
+                
+        # Drop Tier 3 matches if Tier 1 or Tier 2 preceeding evidence is present
+        has_tier1_or_2 = any(m["tier"] in ("Tier 1", "Tier 2") for m in unique_matches)
+        if has_tier1_or_2:
+            unique_matches = [m for m in unique_matches if m["tier"] != "Tier 3"]
+                
+        # 6. Aggregate or Fallback to VUS
+        if unique_matches:
+            # Sort unique matches by highest clinical significance
+            def get_record_sort_key(m):
+                t_scores = {"Tier 1": 1, "Tier 2": 2, "Tier 3": 3}
+                l_scores = {"Level A": 1, "Level B": 2, "Level C": 3, "Level D": 4, "Level VUS": 5}
+                t_score = t_scores.get(m["tier"], 9)
+                l_score = l_scores.get(m["level"], 9)
+                return (t_score, l_score)
+                
+            unique_matches.sort(key=get_record_sort_key)
+            
+            # Gather fields (keep them aligned, take only the first PMID for each matched row)
+            tiers = [m["tier"] if m["tier"] else "Tier 3" for m in unique_matches]
+            levels = [m["level"] if m["level"] else "Level VUS" for m in unique_matches]
+            bts = [m["biomarker_type"].capitalize() if m["biomarker_type"] else "None" for m in unique_matches]
+            # Pick only the first PMID/OncoKB reference (already resolved to a single one)
+            pmids = [m["pmids"] if m["pmids"] else "OncoKB" for m in unique_matches]
+                    
+            drugs = [m["drug"] if m["drug"] else "None" for m in unique_matches]
+            responses = [m["response"].replace("_", " ").title() if m["response"] else "None" for m in unique_matches]
+            sources = [m["source"] if m["source"] else "None" for m in unique_matches]
+            
+            variant["tier"] = " | ".join(tiers)
+            variant["level"] = " | ".join(levels)
+            variant["biomarker_type"] = " | ".join(bts)
+            variant["evidence"] = " | ".join(pmids)
+            variant["drug"] = " | ".join(drugs)
+            variant["response"] = " | ".join(responses)
+            variant["evidence_source"] = " | ".join(sources)
+            variant["evidence_json"] = unique_matches
+        else:
+            # VUS Fallback
+            variant["tier"] = "Tier 3"
+            variant["level"] = "Level VUS"
+            variant["biomarker_type"] = "None"
+            variant["evidence"] = "None"
+            variant["drug"] = "None"
+            variant["response"] = "None"
+            variant["evidence_source"] = "None"
+            variant["evidence_json"] = []
+
+    if needs_save:
+        case.filtered_variants = json.dumps(variants)
+        db.commit()
+
+    return variants
 
 @app.post("/api/cases/{case_id}/variants/confirm")
 def confirm_case_variants(
@@ -397,20 +558,28 @@ def confirm_case_variants(
     db: Session = Depends(get_db)
 ):
     """
-    Logs the operator-confirmed variants for the specific case to prepare for Phase 3.
+    Logs the operator-confirmed variants and preserves them with raw evidence JSON.
     """
     case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="Clinical case not found")
 
-    # Logging to standard output as required for trace-back
+    # Filter out selected variants from the cached filtered list
+    all_variants = json.loads(case.filtered_variants) if case.filtered_variants else []
+    confirmed_variants = [v for v in all_variants if v.get("hgvsg") in payload.selected_hgvsg]
+    
+    # Save the selected variants
+    case.confirmed_variants = json.dumps(confirmed_variants)
+    db.commit()
+
+    # Logging to standard output as required for clinical audit
     print(f"\n[CLINICAL AUDIT LOG] Case ID: CASE-{case_id} | Operator: {current_user.username} | Timestamp: {datetime.utcnow()}")
-    print(f"[CLINICAL AUDIT LOG] Confirmed {len(payload.selected_hgvsg)} Variants:")
-    for hgvsg in payload.selected_hgvsg:
-        print(f"  - HGVSg: {hgvsg}")
+    print(f"[CLINICAL AUDIT LOG] Confirmed {len(confirmed_variants)} Variants with evidence:")
+    for v in confirmed_variants:
+        print(f"  - HGVSg: {v.get('hgvsg')} | Gene: {v.get('gene')} | Tier: {v.get('tier')} | Source: {v.get('evidence_source')}")
     print("[CLINICAL AUDIT LOG] End of Log.\n")
 
-    return {"message": f"Successfully logged {len(payload.selected_hgvsg)} variants for CASE-{case_id}."}
+    return {"message": f"Successfully logged and saved {len(confirmed_variants)} confirmed variants for CASE-{case_id}."}
 
 
 # --- FRONTEND ROUTING & STATIC FILES ---
