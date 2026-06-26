@@ -39,17 +39,109 @@ except Exception as e:
     print(f"Warning: Failed to load DOID database: {e}")
     DOID_DATABASE = []
 
+
+DRIVER_GENES_MAP = {}
+DRIVER_GENES_COUNT = {}
+INDICATION_LIST = []
+
+def load_driver_genes():
+    global DRIVER_GENES_MAP, DRIVER_GENES_COUNT, INDICATION_LIST
+    tsv_path = os.path.join(os.path.dirname(BASE_DIR), "References", "Driver-Genes.tsv")
+    if not os.path.exists(tsv_path):
+        tsv_path = os.path.join(BASE_DIR, "References", "Driver-Genes.tsv")
+        
+    if not os.path.exists(tsv_path):
+        print(f"Warning: Driver-Genes.tsv not found at {tsv_path}")
+        return
+
+    doid_map = {item["doid"]: item["name"] for item in DOID_DATABASE}
+
+    try:
+        temp_map = {}
+        doid_names = {}
+        with open(tsv_path, "r") as f:
+            header = f.readline().strip().split("\t")
+            if "DOID" not in header or "SYMBOL" not in header:
+                print("Warning: DOID or SYMBOL columns missing from Driver-Genes.tsv")
+                return
+            doid_idx = header.index("DOID")
+            symbol_idx = header.index("SYMBOL")
+            cancer_idx = header.index("CANCER_TYPE") if "CANCER_TYPE" in header else -1
+            
+            for line in f:
+                parts = line.strip().split("\t")
+                if len(parts) > max(doid_idx, symbol_idx):
+                    doid = parts[doid_idx].strip()
+                    symbol = parts[symbol_idx].strip()
+                    cancer_type = parts[cancer_idx].strip() if cancer_idx != -1 else ""
+                    if doid and symbol:
+                        if doid not in temp_map:
+                            temp_map[doid] = set()
+                        temp_map[doid].add(symbol)
+                        if doid not in doid_names and cancer_type:
+                            doid_names[doid] = cancer_type
+
+        DRIVER_GENES_MAP = {doid: list(genes) for doid, genes in temp_map.items()}
+        DRIVER_GENES_COUNT = {doid: len(genes) for doid, genes in temp_map.items()}
+        
+        abbrev_map = {
+            "ANGS": "Angiosarcoma",
+            "LIPO": "Liposarcoma",
+            "CSCC": "Cutaneous Squamous Cell Carcinoma",
+            "PRAD": "Prostate Adenocarcinoma",
+            "STAD": "Stomach Adenocarcinoma",
+            "HNSC": "Head and Neck Squamous Cell Carcinoma",
+            "CCRCC": "Clear Cell Renal Cell Carcinoma",
+            "ESCA": "Esophageal Cancer",
+            "SKCM": "Skin Cutaneous Melanoma",
+            "ALL": "Acute Lymphoblastic Leukemia",
+            "NSCLC": "Non-Small Cell Lung Cancer",
+            "SCLC": "Small Cell Lung Cancer",
+            "READ": "Rectum Adenocarcinoma",
+            "WT": "Wilms Tumor",
+            "UCEC": "Uterine Corpus Endometrial Carcinoma",
+            "BRCA": "Breast Invasive Carcinoma",
+            "AML": "Acute Myeloid Leukemia",
+            "COAD": "Colon Adenocarcinoma",
+            "BLCA": "Bladder Urothelial Carcinoma",
+            "PAAD": "Pancreatic Adenocarcinoma",
+            "OV": "Ovarian Serous Cystadenocarcinoma",
+            "GBM": "Glioblastoma Multiforme",
+            "THCA": "Thyroid Carcinoma",
+            "KIRC": "Kidney Renal Clear Cell Carcinoma",
+            "LIHC": "Liver Hepatocellular Carcinoma"
+        }
+
+        indications = []
+        for doid, genes in temp_map.items():
+            name = doid_map.get(doid)
+            if not name:
+                raw_name = doid_names.get(doid) or "Unknown Disease"
+                name = abbrev_map.get(raw_name, raw_name)
+            indications.append({
+                "doid": doid,
+                "name": name,
+                "gene_count": len(genes),
+                "genes": list(genes)
+            })
+        
+        INDICATION_LIST = sorted(indications, key=lambda x: x["name"])
+        print(f"[LOADER] Loaded {len(DRIVER_GENES_MAP)} indications from Driver-Genes.tsv")
+    except Exception as e:
+        print(f"Error parsing Driver-Genes.tsv: {e}")
+
 @app.on_event("startup")
 def on_startup():
     """
-    Initializes the database schema and preloads civicpy cache on server startup.
+    Initializes the database schema, preloads driver genes, and preloads cache on startup.
     """
     init_db()
+    load_driver_genes()
     try:
         from app.civic_client import preload_civic_cache
         preload_civic_cache()
     except Exception as e:
-        print(f"Warning: Failed to preload civicpy cache: {e}")
+        print(f"Warning: Failed to preload cache: {e}")
 
 # --- AUTHENTICATION ENDPOINTS ---
 
@@ -154,6 +246,33 @@ def list_cases(
     """
     cases = db.query(ClinicalCase).all()
     return cases
+
+@app.get("/api/cases/stats", response_model=DashboardStats)
+def get_dashboard_stats(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Computes aggregation statistics for the dashboard metrics and pie charts.
+    """
+    total_cases = db.query(ClinicalCase).count()
+    active_cases = db.query(ClinicalCase).filter(ClinicalCase.is_archived == False).count()
+    archived_cases = db.query(ClinicalCase).filter(ClinicalCase.is_archived == True).count()
+    
+    # Calculate distribution of Indication Names
+    cases = db.query(ClinicalCase).all()
+    distribution = {}
+    for case in cases:
+        name = case.indication_name
+        distribution[name] = distribution.get(name, 0) + 1
+        
+    return DashboardStats(
+        total_cases=total_cases,
+        active_cases=active_cases,
+        archived_cases=archived_cases,
+        indication_distribution=distribution
+    )
+
 
 @app.get("/api/cases/{case_id}", response_model=ClinicalCaseResponse)
 def get_case(
@@ -294,31 +413,7 @@ def create_case(
     return new_case
 
 
-@app.get("/api/cases/stats", response_model=DashboardStats)
-def get_dashboard_stats(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Computes aggregation statistics for the dashboard metrics and pie charts.
-    """
-    total_cases = db.query(ClinicalCase).count()
-    active_cases = db.query(ClinicalCase).filter(ClinicalCase.is_archived == False).count()
-    archived_cases = db.query(ClinicalCase).filter(ClinicalCase.is_archived == True).count()
-    
-    # Calculate distribution of Indication Names
-    cases = db.query(ClinicalCase).all()
-    distribution = {}
-    for case in cases:
-        name = case.indication_name
-        distribution[name] = distribution.get(name, 0) + 1
-        
-    return DashboardStats(
-        total_cases=total_cases,
-        active_cases=active_cases,
-        archived_cases=archived_cases,
-        indication_distribution=distribution
-    )
+
 
 
 # --- DOID AUTOCOMPLETE SEARCH ---
@@ -370,37 +465,18 @@ def process_case(
     background_tasks.add_task(run_variant_pipeline, case_id)
     return {"message": "Genomic analysis triggered successfully.", "status": case.status}
 
-@app.get("/api/cases/{case_id}/variants")
-async def get_case_variants(
-    case_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Returns the parsed, surviving variants of a completed case, decorated with
-    computed Tier and Level based on Local DB (SQLCipher) or CIViC MCP server.
-    """
-    case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
-    if not case:
-        raise HTTPException(status_code=404, detail="Clinical case not found")
-
-    if case.status != "Completed":
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Variants are only reviewable when analysis status is Completed. Current status: {case.status}"
-        )
-
+def tier_case_variants(case, db):
     if not case.filtered_variants:
         return []
-
     variants = json.loads(case.filtered_variants)
     
-    # -------------------------------------------------------------
-    # PHASE 3: Standardisation & Variant Tiering (AMP/ASCO/CAP)
-    # -------------------------------------------------------------
+    # Fast path: if variants are already decorated/tiered, return immediately
+    if variants and isinstance(variants[0], dict) and "tier" in variants[0]:
+        return variants
+    
     from app.database import EvidenceSessionLocal, LocalEvidence
     from app.tiering import calculate_variant_tier
-
+    
     def normalize_alteration(alt):
         if not alt:
             return ""
@@ -444,9 +520,6 @@ async def get_case_variants(
             ev_session.close()
         return records
 
-    needs_save = True
-    
-    # Process sequentially in main thread to avoid C extension segmentation faults (pysam is not thread-safe)
     for variant in variants:
         p_alt = variant.get("protein", "")
         c_alt = variant.get("cdna", "")
@@ -454,34 +527,57 @@ async def get_case_variants(
         consequence = variant.get("consequence", "")
         exon = variant.get("exon", "")
             
-        # 1. Query Local Database (SQLCipher)
         local_records = query_local_db_sync(gene, p_alt, c_alt, consequence, exon)
         
-        # 2. Query civicpy client
         from app.civic_client import fetch_civic_evidence
         civic_records = fetch_civic_evidence(gene, p_alt, c_alt, consequence, exon)
         
-        # 3. Apply Indication Tiering to all matching records
         class DummyRecord:
             def __init__(self, doid, tier, level):
                 self.doid = doid
                 self.tier = tier
                 self.level = level
 
-        combined_matches = []
-        # Use a simplified alteration query for indication rules
+        # Separate civic and local records first, calculate adjusted tier/level
         query_alt = p_alt if p_alt else c_alt
-        for r in local_records + civic_records:
+        
+        civic_adjusted = []
+        for r in civic_records:
             dummy = DummyRecord(r["doid"], r["tier"], r["level"])
-            # Apply Indication rules
             adjusted_tier, adjusted_level = calculate_variant_tier(
                 gene, query_alt, case.indication_doid, dummy
             )
             r["tier"] = adjusted_tier
             r["level"] = adjusted_level
-            combined_matches.append(r)
+            civic_adjusted.append(r)
             
-        # 5. Deduplicate matching records based on clinical keys
+        civic_keys = set()
+        for r in civic_adjusted:
+            t_val = r["tier"].strip().upper() if r["tier"] else ""
+            l_val = r["level"].strip().upper() if r["level"] else ""
+            bt_val = r["biomarker_type"].strip().upper() if r["biomarker_type"] else ""
+            civic_keys.add((t_val, l_val, bt_val))
+            
+        local_adjusted = []
+        for r in local_records:
+            dummy = DummyRecord(r["doid"], r["tier"], r["level"])
+            adjusted_tier, adjusted_level = calculate_variant_tier(
+                gene, query_alt, case.indication_doid, dummy
+            )
+            r["tier"] = adjusted_tier
+            r["level"] = adjusted_level
+            
+            t_val = r["tier"].strip().upper() if r["tier"] else ""
+            l_val = r["level"].strip().upper() if r["level"] else ""
+            bt_val = r["biomarker_type"].strip().upper() if r["biomarker_type"] else ""
+            
+            if (t_val, l_val, bt_val) in civic_keys:
+                # Drop duplicate local DB record since we keep CIViC
+                continue
+            local_adjusted.append(r)
+            
+        combined_matches = civic_adjusted + local_adjusted
+            
         seen = set()
         unique_matches = []
         for m in combined_matches:
@@ -497,14 +593,11 @@ async def get_case_variants(
                 seen.add(key)
                 unique_matches.append(m)
                 
-        # Drop Tier 3 matches if Tier 1 or Tier 2 preceeding evidence is present
         has_tier1_or_2 = any(m["tier"] in ("Tier 1", "Tier 2") for m in unique_matches)
         if has_tier1_or_2:
             unique_matches = [m for m in unique_matches if m["tier"] != "Tier 3"]
                 
-        # 6. Aggregate or Fallback to VUS
         if unique_matches:
-            # Sort unique matches by highest clinical significance
             def get_record_sort_key(m):
                 t_scores = {"Tier 1": 1, "Tier 2": 2, "Tier 3": 3}
                 l_scores = {"Level A": 1, "Level B": 2, "Level C": 3, "Level D": 4, "Level VUS": 5}
@@ -514,13 +607,10 @@ async def get_case_variants(
                 
             unique_matches.sort(key=get_record_sort_key)
             
-            # Gather fields (keep them aligned, take only the first PMID for each matched row)
             tiers = [m["tier"] if m["tier"] else "Tier 3" for m in unique_matches]
             levels = [m["level"] if m["level"] else "Level VUS" for m in unique_matches]
             bts = [m["biomarker_type"].capitalize() if m["biomarker_type"] else "None" for m in unique_matches]
-            # Pick only the first PMID/OncoKB reference (already resolved to a single one)
             pmids = [m["pmids"] if m["pmids"] else "OncoKB" for m in unique_matches]
-                    
             drugs = [m["drug"] if m["drug"] else "None" for m in unique_matches]
             responses = [m["response"].replace("_", " ").title() if m["response"] else "None" for m in unique_matches]
             sources = [m["source"] if m["source"] else "None" for m in unique_matches]
@@ -534,9 +624,13 @@ async def get_case_variants(
             variant["evidence_source"] = " | ".join(sources)
             variant["evidence_json"] = unique_matches
         else:
-            # VUS Fallback
-            variant["tier"] = "Tier 3"
-            variant["level"] = "Level VUS"
+            is_candidate = (variant.get("impact") in ("HIGH", "MODERATE") and variant.get("gnomad_af", 0.0) <= 0.01)
+            if is_candidate:
+                variant["tier"] = "Tier 3"
+                variant["level"] = "Level VUS"
+            else:
+                variant["tier"] = "Tier 4"
+                variant["level"] = "None"
             variant["biomarker_type"] = "None"
             variant["evidence"] = "None"
             variant["drug"] = "None"
@@ -544,11 +638,31 @@ async def get_case_variants(
             variant["evidence_source"] = "None"
             variant["evidence_json"] = []
 
-    if needs_save:
-        case.filtered_variants = json.dumps(variants)
-        db.commit()
-
+    case.filtered_variants = json.dumps(variants)
+    db.commit()
     return variants
+
+@app.get("/api/cases/{case_id}/variants")
+async def get_case_variants(
+    case_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns the parsed, surviving variants of a completed case, decorated with
+    computed Tier and Level based on Local DB (SQLCipher) or CIViC evidence.
+    """
+    case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Clinical case not found")
+
+    if case.status != "Completed":
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Variants are only reviewable when analysis status is Completed. Current status: {case.status}"
+        )
+
+    return tier_case_variants(case, db)
 
 @app.post("/api/cases/{case_id}/variants/confirm")
 def confirm_case_variants(
@@ -580,6 +694,126 @@ def confirm_case_variants(
     print("[CLINICAL AUDIT LOG] End of Log.\n")
 
     return {"message": f"Successfully logged and saved {len(confirmed_variants)} confirmed variants for CASE-{case_id}."}
+
+
+# --- DRIVER GENES & VCF REPORT EXPORT ---
+
+@app.get("/api/driver-genes/indications")
+def get_driver_genes_indications(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Returns the parsed and grouped lists of indications and their driver genes.
+    """
+    return INDICATION_LIST
+
+@app.get("/api/cases/{case_id}/report/vcf")
+def download_annotated_vcf(
+    case_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generates and downloads the annotated somatic VCF file containing variant Tiers.
+    """
+    from fastapi.responses import FileResponse
+    import cyvcf2
+    
+    case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Clinical case not found")
+        
+    if case.status != "Completed":
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Report files are only reviewable when analysis status is Completed. Current status: {case.status}"
+        )
+        
+    # Make sure tiers are computed on candidate variants
+    variants = tier_case_variants(case, db)
+    
+    # Build tier mapping: (chrom, pos, ref, alt) -> tier_str
+    tier_map = {}
+    for var in variants:
+        hgvsg = var.get("hgvsg", "")
+        if ":" in hgvsg:
+            try:
+                chrom_part, rest = hgvsg.split(":")
+                import re
+                match = re.match(r"^(\d+)([A-Z\-]+)>([A-Z\-]+)$", rest, re.IGNORECASE)
+                if match:
+                    pos = int(match.group(1))
+                    ref = match.group(2)
+                    alt = match.group(3)
+                    tier_str = var.get("tier", "Tier 3")
+                    
+                    if "Tier 1" in tier_str:
+                        tier = "Tier 1"
+                    elif "Tier 2" in tier_str:
+                        tier = "Tier 2"
+                    elif "Tier 3" in tier_str:
+                        tier = "Tier 3"
+                    else:
+                        tier = "Tier 4"
+                        
+                    chrom_key = chrom_part.lower().replace("chr", "")
+                    tier_map[(chrom_key, pos, ref.upper(), alt.upper())] = tier
+            except Exception as e:
+                print(f"Error parsing hgvsg {hgvsg} for VCF download: {e}")
+
+    # Build output VCF path
+    input_vcf = case.vcf_path
+    output_vcf = input_vcf + ".annotated.vcf"
+    
+    try:
+        vcf_reader = cyvcf2.VCF(input_vcf)
+        vcf_reader.add_info_to_header({
+            'ID': 'TIER',
+            'Description': 'Variant Tier (Tier 1/2/3/4) based on AMP/ASCO/CAP guidelines',
+            'Type': 'String',
+            'Number': '1'
+        })
+        vcf_writer = cyvcf2.Writer(output_vcf, vcf_reader)
+        
+        for record in vcf_reader:
+            filter_val = record.FILTER
+            is_pass = False
+            if filter_val is None:
+                is_pass = True
+            elif isinstance(filter_val, str):
+                is_pass = filter_val.strip() in ("", ".", "PASS")
+            elif isinstance(filter_val, (list, tuple)):
+                is_pass = len(filter_val) == 0 or all(x in ("", ".", "PASS") for x in filter_val)
+                
+            if is_pass:
+                chrom_key = str(record.CHROM).lower().replace("chr", "")
+                pos = record.POS + 1
+                ref = str(record.REF).upper()
+                alt = str(record.ALT[0]).upper() if record.ALT else ""
+                
+                tier = tier_map.get((chrom_key, pos, ref, alt))
+                if not tier:
+                    tier = "Tier 4"
+                record.INFO['TIER'] = tier
+                
+            vcf_writer.write_record(record)
+            
+        vcf_reader.close()
+        vcf_writer.close()
+    except Exception as e:
+        if os.path.exists(output_vcf):
+            try:
+                os.remove(output_vcf)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"Failed to annotate output VCF: {str(e)}")
+        
+    filename = f"Case_{case_id}_Annotated.vcf"
+    return FileResponse(
+        output_vcf,
+        media_type="text/vcard",
+        filename=filename
+    )
 
 
 # --- PHASE 4 LLM SYNTHESIS & REPORTING ENDPOINTS ---
@@ -645,6 +879,130 @@ def save_case_report_draft(
     db.commit()
     return {"message": "Draft report saved successfully."}
 
+def refactor_references(narratives_dict):
+    import re
+    parsed_references = {}
+    citation_order = []
+    cleaned_narratives = {}
+    
+    # 1. First pass: extract references sections and strip them from the narratives
+    ref_section_pattern = re.compile(
+        r"##\s*References\s*\n(.*?)(?=\n##|\n#|$)", 
+        re.IGNORECASE | re.DOTALL
+    )
+    
+    for key, text in narratives_dict.items():
+        if not text:
+            cleaned_narratives[key] = ""
+            continue
+            
+        # Find all references blocks
+        ref_blocks = ref_section_pattern.findall(text)
+        for block in ref_blocks:
+            ref_lines = [line.strip() for line in block.split("\n") if line.strip()]
+            for line in ref_lines:
+                key_match = re.search(r"\(([^)]+)\)", line)
+                if key_match:
+                    ref_key = key_match.group(1).strip()
+                    
+                    # Clean up the reference line: strip number prefix if any
+                    # while preserving markdown link structure
+                    link_match = re.match(r"^\[(.*?)\]\((.*?)\)$", line)
+                    if link_match:
+                        link_text = link_match.group(1).strip()
+                        link_url = link_match.group(2).strip()
+                        cleaned_link_text = re.sub(r"^\[?\s*\d+\.\s+", "", link_text)
+                        cleaned_line = f"[{cleaned_link_text}]({link_url})"
+                    else:
+                        cleaned_line = re.sub(r"^\[?\s*\d+\.\s+", "", line)
+                        
+                    parsed_references[ref_key] = cleaned_line
+                    
+        # Remove references sections from text
+        cleaned_text = ref_section_pattern.sub("", text).strip()
+        cleaned_narratives[key] = cleaned_text
+
+    # 2. Extract PMIDs from the cleaned narratives and add them to parsed_references
+    pmid_pattern = re.compile(r"\bPMID:\s*(\d+)\b", re.IGNORECASE)
+    for key, text in cleaned_narratives.items():
+        if not text:
+            continue
+        pmids_found = pmid_pattern.findall(text)
+        for pmid_num in pmids_found:
+            pmid_key = f"PMID:{pmid_num}"
+            if pmid_key not in parsed_references:
+                parsed_references[pmid_key] = f"[PMID:{pmid_num}](https://pubmed.ncbi.nlm.nih.gov/{pmid_num})"
+
+    # 3. Second pass: find citations in the cleaned text and map them to numbers
+    all_combined_text = "\n".join(cleaned_narratives.values())
+    
+    key_positions = []
+    for ref_key in parsed_references.keys():
+        escaped_key = re.escape(ref_key)
+        # Search for pmid or standard key case-insensitively
+        match = re.search(rf"\b{escaped_key}\b|{escaped_key}", all_combined_text, re.IGNORECASE)
+        if match:
+            key_positions.append((ref_key, match.start()))
+            
+    # Sort keys by their first occurrence position
+    key_positions.sort(key=lambda x: x[1])
+    for ref_key, _ in key_positions:
+        if ref_key not in citation_order:
+            citation_order.append(ref_key)
+            
+    # Add any remaining keys that weren't cited in text
+    for ref_key in parsed_references.keys():
+        if ref_key not in citation_order:
+            citation_order.append(ref_key)
+            
+    # Map from key -> number
+    key_to_num = {key: idx for idx, key in enumerate(citation_order, 1)}
+    
+    # 4. Third pass: replace in-text citations with numbers
+    for key, text in cleaned_narratives.items():
+        if not text:
+            continue
+            
+        if key_to_num:
+            standard_keys = [k for k in key_to_num.keys() if not k.startswith("PMID:")]
+            pmid_keys = [k for k in key_to_num.keys() if k.startswith("PMID:")]
+            
+            if standard_keys:
+                keys_escaped = [re.escape(k) for k in standard_keys]
+                keys_pattern = "|".join(keys_escaped)
+                paren_pattern = re.compile(rf"[(\[]\s*((?:{keys_pattern})(?:\s*;\s*(?:{keys_pattern}))*)\s*[)\]]")
+                
+                def replacer(match):
+                    content = match.group(1)
+                    citation_parts = [c.strip() for c in content.split(";")]
+                    num_citations = []
+                    for part in citation_parts:
+                        if part in key_to_num:
+                            num_citations.append(f"{key_to_num[part]}")
+                        else:
+                            num_citations.append(part)
+                    return "[" + ", ".join(num_citations) + "]"
+                    
+                text = paren_pattern.sub(replacer, text)
+                
+            for p_key in pmid_keys:
+                num = key_to_num[p_key]
+                # Match [PMID:12345] or (PMID:12345)
+                text = re.sub(rf"[(\[]\s*{re.escape(p_key)}\s*[)\]]", f"[{num}]", text, flags=re.IGNORECASE)
+                # Match bare PMID:12345
+                text = re.sub(rf"\b{re.escape(p_key)}\b", f"[{num}]", text, flags=re.IGNORECASE)
+                
+        cleaned_narratives[key] = text
+
+    # Build the final references block
+    final_references = []
+    for ref_key in citation_order:
+        ref_text = parsed_references[ref_key]
+        num = key_to_num[ref_key]
+        final_references.append(f"{num}. {ref_text}")
+        
+    return cleaned_narratives, final_references
+
 @app.get("/api/cases/{case_id}/report/docx")
 def download_case_report_docx(
     case_id: int,
@@ -672,6 +1030,14 @@ def download_case_report_docx(
         except Exception:
             pass
 
+    # Extract, strip, and re-sequence references globally
+    narratives_dict = {
+        "gene_analysis": report_draft_parsed.get("gene_analysis", ""),
+        "variant_narrative": report_draft_parsed.get("variant_narrative", ""),
+        "evidence_records": report_draft_parsed.get("evidence_records", "")
+    }
+    cleaned_narratives, final_references = refactor_references(narratives_dict)
+
     # Build Word document
     doc = Document()
     
@@ -693,95 +1059,509 @@ def download_case_report_docx(
     run_sub.font.italic = True
     run_sub.font.color.rgb = RGBColor(100, 116, 139) # Slate 500
 
-    # Section 1: Clinical Information
+    # Section 1: Clinical & Patient Demographics
     h1 = doc.add_heading(level=1)
-    h1.add_run("1. Patient & Case Demographics").font.color.rgb = RGBColor(15, 23, 42)
+    run_h1 = h1.add_run("1. Clinical & Patient Demographics")
+    run_h1.font.name = 'Arial'
+    run_h1.font.color.rgb = RGBColor(15, 23, 42)
     
-    table_info = doc.add_table(rows=5, cols=2)
+    table_info = doc.add_table(rows=7, cols=4)
     table_info.style = 'Table Grid'
     
-    info_rows = [
-        ("Case ID", f"CASE-{case.id:04d}"),
-        ("Patient Name", case.patient_name),
-        ("Age / Sex", f"{case.patient_age} / {case.patient_sex}"),
-        ("Indication (DOID)", f"{case.indication_name} ({case.indication_doid})"),
-        ("Genome & Transcript References", f"{case.reference_genome} / {case.transcript_db}")
+    demog_grid = [
+        [("Provider", ""), ("Physician", "")],
+        [("Pathologist", ""), ("Report Date", "")],
+        [("Patient Name", case.patient_name or ""), ("Age", str(case.patient_age) if case.patient_age is not None else "")],
+        [("Sex", case.patient_sex or ""), ("Diagnosis", case.indication_name or "")],
+        [("Stage", ""), ("Accession Number / Patient ID", f"CASE-{case.id:04d}")],
+        [("Collection Site", ""), ("Specimen Type", "")],
+        [("Collection Date", ""), ("", "")]
     ]
     
-    for r_idx, (label, val) in enumerate(info_rows):
+    for r_idx, row_pairs in enumerate(demog_grid):
         row = table_info.rows[r_idx]
-        row.cells[0].paragraphs[0].add_run(label).font.bold = True
-        row.cells[1].paragraphs[0].add_run(val)
+        
+        # Pair 1: cols 0 & 1
+        label1, val1 = row_pairs[0]
+        p1 = row.cells[0].paragraphs[0]
+        run1 = p1.add_run(label1)
+        run1.font.name = 'Arial'
+        run1.font.bold = True
+        run1.font.size = Pt(9.5)
+        p1_val = row.cells[1].paragraphs[0]
+        run1_val = p1_val.add_run(val1)
+        run1_val.font.name = 'Arial'
+        run1_val.font.size = Pt(9.5)
+        
+        # Pair 2: cols 2 & 3
+        label2, val2 = row_pairs[1]
+        p2 = row.cells[2].paragraphs[0]
+        run2 = p2.add_run(label2)
+        run2.font.name = 'Arial'
+        run2.font.bold = True
+        run2.font.size = Pt(9.5)
+        p2_val = row.cells[3].paragraphs[0]
+        run2_val = p2_val.add_run(val2)
+        run2_val.font.name = 'Arial'
+        run2_val.font.size = Pt(9.5)
         
     doc.add_paragraph() # Spacing
 
-    # Section 2: Summary Table
+    # Section 2: Variant Classification Summary
     h2 = doc.add_heading(level=1)
-    h2.add_run("2. Variant Classification Summary").font.color.rgb = RGBColor(15, 23, 42)
+    run_h2 = h2.add_run("2. Variant Classification Summary")
+    run_h2.font.name = 'Arial'
+    run_h2.font.color.rgb = RGBColor(15, 23, 42)
     
-    table_summary = doc.add_table(rows=1, cols=9)
-    table_summary.style = 'Table Grid'
-    
-    headers = [
-        "Gene", "Variant (HGVSg)", "c. Notation", "p. Notation", 
-        "Biomarker Effect", "Tier", "Level", "Drug(s)", "Reference"
-    ]
-    hdr_cells = table_summary.rows[0].cells
-    for i, h in enumerate(headers):
-        hdr_cells[i].paragraphs[0].add_run(h).font.bold = True
-        
     from app.llm_service import format_protein_change
 
-    for v in confirmed_variants:
-        row_cells = table_summary.add_row().cells
+    def format_therapeutic_response(biomarker_type, drug, response):
+        if not biomarker_type or biomarker_type.lower() != "therapeutic":
+            return "None", "None"
+        clean_drug = drug if drug and drug != "None" else "None"
+        clean_response = "None"
+        if response and response != "None":
+            resp_lower = response.lower()
+            if "sensit" in resp_lower:
+                clean_response = "Sensitive"
+            elif "resist" in resp_lower or "reduced" in resp_lower or "non" in resp_lower or "no" in resp_lower:
+                clean_response = "Non-sensitive"
+            else:
+                clean_response = response
+        return clean_drug, clean_response
+
+    def add_variant_table(doc, section_title, variants_list):
+        # Add subsection title
+        p_sub = doc.add_paragraph()
+        p_sub.paragraph_format.space_before = Pt(8)
+        p_sub.paragraph_format.space_after = Pt(4)
+        run_sub = p_sub.add_run(section_title)
+        run_sub.font.name = 'Arial'
+        run_sub.font.bold = True
+        run_sub.font.size = Pt(11)
+        run_sub.font.color.rgb = RGBColor(71, 85, 105)
         
-        gene_name = v.get("gene", "")
-        hgvsg = v.get("hgvsg", "")
-        cdna = v.get("cdna", "")
-        consequence = v.get("consequence", "")
-        p_notation = format_protein_change(v.get("protein", ""), consequence)
+        table = doc.add_table(rows=1, cols=10)
+        table.style = 'Table Grid'
         
-        biomarker_effect = v.get("response", "None")
-        
-        tier_raw = v.get("tier", "")
-        tier_clean = " | ".join(t.replace("Tier ", "").strip() for t in tier_raw.split(" | ")) if tier_raw else "3"
-        
-        level_raw = v.get("level", "")
-        level_clean = " | ".join(l.replace("Level ", "").strip() for l in level_raw.split(" | ")) if level_raw else "VUS"
-        
-        drugs = v.get("drug", "None")
-        reference = v.get("evidence", "None")
-        
-        row_cells[0].paragraphs[0].add_run(gene_name)
-        row_cells[1].paragraphs[0].add_run(hgvsg)
-        row_cells[2].paragraphs[0].add_run(cdna)
-        row_cells[3].paragraphs[0].add_run(p_notation)
-        row_cells[4].paragraphs[0].add_run(biomarker_effect)
-        row_cells[5].paragraphs[0].add_run(tier_clean)
-        row_cells[6].paragraphs[0].add_run(level_clean)
-        row_cells[7].paragraphs[0].add_run(drugs)
-        row_cells[8].paragraphs[0].add_run(reference)
-        
-    doc.add_paragraph() # Spacing
+        headers = [
+            "Gene", "cDNA Change", "Protein Change", "HGVSg.", "Consequence",
+            "Level", "Biomarker Type", "Drug", "Response", "Evidence"
+        ]
+        hdr_cells = table.rows[0].cells
+        for col_idx, h_text in enumerate(headers):
+            p = hdr_cells[col_idx].paragraphs[0]
+            run = p.add_run(h_text)
+            run.font.name = 'Arial'
+            run.font.bold = True
+            run.font.size = Pt(9)
+            
+        if not variants_list:
+            row_cells = table.add_row().cells
+            row_cells[0].paragraphs[0].add_run("No variants of this tier selected.")
+        else:
+            for v in variants_list:
+                evidence_items = v.get("evidence_json", [])
+                
+                gene_name = v.get("gene", "")
+                cdna = v.get("cdna", "")
+                consequence = v.get("consequence", "")
+                is_splice = consequence and "splice" in consequence.lower()
+                p_notation = "" if is_splice else format_protein_change(v.get("protein", ""), consequence)
+                hgvsg = v.get("hgvsg", "")
+                
+                consequence_clean = ""
+                if consequence:
+                    parts = consequence.split('&')
+                    consequence_clean = ' & '.join(
+                        p.replace("_variant", "").replace("_", " ").title() for p in parts
+                    )
+                else:
+                    consequence_clean = "Unknown"
+                
+                def add_exploded_row(ev):
+                    row_cells = table.add_row().cells
+                    
+                    level = "VUS"
+                    biomarker_type = "None"
+                    drug = "None"
+                    response = "None"
+                    evidence_str = "None"
+                    
+                    if ev:
+                        level = ev.get("level", "Level VUS").replace("Level ", "").strip()
+                        biomarker_type = ev.get("biomarker_type", "None").strip()
+                        
+                        # Therapeutic mapping
+                        drug, response = format_therapeutic_response(biomarker_type, ev.get("drug", "None"), ev.get("response", "None"))
+                        
+                        # Evidence EID and PMID
+                        parts = []
+                        if ev.get("source") == "CIViC" and ev.get("eid"):
+                            parts.append(ev.get("eid"))
+                        pmid_val = ev.get("pmids")
+                        if pmid_val and pmid_val != "None":
+                            parts.append(pmid_val)
+                        
+                        evidence_str = f"{parts[0]} ({parts[1]})" if len(parts) > 1 else (parts[0] if parts else "None")
+                    else:
+                        level = v.get("level", "Level VUS").split(" | ")[0].replace("Level ", "").strip()
+                        biomarker_type = v.get("biomarker_type", "None").split(" | ")[0].strip()
+                        
+                        raw_drug = v.get("drug", "None").split(" | ")[0]
+                        raw_resp = v.get("response", "None").split(" | ")[0]
+                        drug, response = format_therapeutic_response(biomarker_type, raw_drug, raw_resp)
+                        
+                        evidence_str = v.get("evidence", "None").split(" | ")[0]
+                    
+                    biomarker_clean = biomarker_type.capitalize()
+                    
+                    for col_idx, val in enumerate([
+                        gene_name, cdna, p_notation, hgvsg, consequence_clean,
+                        level, biomarker_clean, drug, response, evidence_str
+                    ]):
+                        p = row_cells[col_idx].paragraphs[0]
+                        run = p.add_run(val)
+                        run.font.name = 'Arial'
+                        run.font.size = Pt(8.5)
+                
+                if not evidence_items:
+                    add_exploded_row(None)
+                else:
+                    for ev in evidence_items:
+                        add_exploded_row(ev)
+                        
+        doc.add_paragraph() # Spacing
+
+    # Group variants
+    tier1_variants = [v for v in confirmed_variants if v.get("tier", "").lower().find("1") != -1]
+    tier2_variants = [v for v in confirmed_variants if v.get("tier", "").lower().find("2") != -1]
+    
+    add_variant_table(doc, "a. Variants of Strong Clinical Significance - Tier 1", tier1_variants)
+    add_variant_table(doc, "b. Variants of Potential Clinical Significance - Tier 2", tier2_variants)
 
     # Section 3: Detailed Section (LLM generated stuff)
     h3 = doc.add_heading(level=1)
-    h3.add_run("3. Detailed Interpretative Narratives").font.color.rgb = RGBColor(15, 23, 42)
+    run_h3 = h3.add_run("3. Detailed Interpretative Narratives")
+    run_h3.font.name = 'Arial'
+    run_h3.font.color.rgb = RGBColor(15, 23, 42)
     
-    # Gene Analysis
-    h3_1 = doc.add_heading(level=2)
-    h3_1.add_run("Gene Analysis").font.color.rgb = RGBColor(71, 85, 105)
-    doc.add_paragraph(report_draft_parsed.get("gene_analysis", "No gene summary has been synthesized."))
+    def parse_inline_markdown(paragraph, text):
+        import re
+        pattern = re.compile(r'(\*\*.*?\*\*|\*.*?\*|\[.*?\]\(.*?\))')
+        parts = pattern.split(text)
+        for part in parts:
+            if not part:
+                continue
+            if part.startswith('**') and part.endswith('**'):
+                content = part[2:-2]
+                run = paragraph.add_run(content)
+                run.font.name = 'Arial'
+                run.font.size = Pt(10)
+                run.font.bold = True
+            elif part.startswith('*') and part.endswith('*'):
+                content = part[1:-1]
+                run = paragraph.add_run(content)
+                run.font.name = 'Arial'
+                run.font.size = Pt(10)
+                run.font.italic = True
+            elif part.startswith('[') and ']' in part and part.endswith(')'):
+                match = re.match(r'^\[(.*?)\]\((.*?)\)$', part)
+                if match:
+                    link_text = match.group(1)
+                    link_url = match.group(2)
+                    
+                    import docx
+                    import docx.oxml
+                    import docx.oxml.ns
+                    
+                    part_obj = paragraph.part
+                    r_id = part_obj.relate_to(link_url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
+                    
+                    hyperlink = docx.oxml.shared.OxmlElement('w:hyperlink')
+                    hyperlink.set(docx.oxml.shared.qn('r:id'), r_id)
+                    
+                    new_run = docx.oxml.shared.OxmlElement('w:r')
+                    rPr = docx.oxml.shared.OxmlElement('w:rPr')
+                    
+                    rFonts = docx.oxml.shared.OxmlElement('w:rFonts')
+                    rFonts.set(docx.oxml.shared.qn('w:ascii'), 'Arial')
+                    rFonts.set(docx.oxml.shared.qn('w:hAnsi'), 'Arial')
+                    rPr.append(rFonts)
+                    
+                    sz = docx.oxml.shared.OxmlElement('w:sz')
+                    sz.set(docx.oxml.shared.qn('w:val'), '20')
+                    rPr.append(sz)
+                    
+                    color = docx.oxml.shared.OxmlElement('w:color')
+                    color.set(docx.oxml.shared.qn('w:val'), '2563EB')
+                    rPr.append(color)
+                    
+                    u = docx.oxml.shared.OxmlElement('w:u')
+                    u.set(docx.oxml.shared.qn('w:val'), 'single')
+                    rPr.append(u)
+                    
+                    new_run.append(rPr)
+                    text_node = docx.oxml.shared.OxmlElement('w:t')
+                    text_node.text = link_text
+                    new_run.append(text_node)
+                    hyperlink.append(new_run)
+                    paragraph._p.append(hyperlink)
+            else:
+                run = paragraph.add_run(part)
+                run.font.name = 'Arial'
+                run.font.size = Pt(10)
+
+    def add_markdown_to_docx(doc, markdown_text):
+        import re
+        if not markdown_text:
+            return
+        lines = markdown_text.split('\n')
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if not line:
+                i += 1
+                continue
+                
+            # Headings
+            heading_match = re.match(r'^(#{1,6})\s+(.*)$', line)
+            if heading_match:
+                level = len(heading_match.group(1))
+                title = heading_match.group(2).strip()
+                
+                h = doc.add_paragraph()
+                h.paragraph_format.space_before = Pt(10)
+                h.paragraph_format.space_after = Pt(4)
+                h.paragraph_format.keep_with_next = True
+                
+                run = h.add_run(title)
+                run.font.name = 'Arial'
+                run.font.bold = True
+                
+                if level == 1:
+                    run.font.size = Pt(13)
+                    run.font.color.rgb = RGBColor(15, 23, 42)
+                elif level == 2:
+                    run.font.size = Pt(11.5)
+                    run.font.color.rgb = RGBColor(71, 85, 105)
+                else:
+                    run.font.size = Pt(10.5)
+                    run.font.color.rgb = RGBColor(100, 116, 139)
+                i += 1
+                continue
+                
+            # Lists
+            bullet_match = re.match(r'^[-*]\s+(.*)$', line)
+            number_match = re.match(r'^(\d+)\.\s+(.*)$', line)
+            
+            if bullet_match:
+                p = doc.add_paragraph(style='List Bullet')
+                p.paragraph_format.space_before = Pt(1)
+                p.paragraph_format.space_after = Pt(1)
+                parse_inline_markdown(p, bullet_match.group(1).strip())
+            elif number_match:
+                p = doc.add_paragraph(style='List Number')
+                p.paragraph_format.space_before = Pt(1)
+                p.paragraph_format.space_after = Pt(1)
+                parse_inline_markdown(p, number_match.group(2).strip())
+            else:
+                p = doc.add_paragraph()
+                p.paragraph_format.space_before = Pt(3)
+                p.paragraph_format.space_after = Pt(4)
+                parse_inline_markdown(p, line)
+                
+            i += 1
+            
+    def group_narratives_by_variant(gene_analysis, variant_narrative, evidence_records):
+        import re
+        def split_by_variant(text):
+            if not text:
+                return {}
+            # Match standard variant header pattern
+            pattern = re.compile(r'(### Variant\s+\d+\s*\([^)]+\)\s*Evidence:?|### Variant\s+\d+\s*\([^)]+\):?)', re.IGNORECASE)
+            parts = pattern.split(text)
+            grouped = {}
+            i = 1
+            while i < len(parts):
+                header = parts[i].strip()
+                content = parts[i+1].strip() if i+1 < len(parts) else ""
+                num_match = re.search(r'Variant\s+(\d+)', header, re.IGNORECASE)
+                if num_match:
+                    var_num = int(num_match.group(1))
+                    grouped[var_num] = {
+                        "header": header,
+                        "content": content
+                    }
+                i += 2
+            return grouped
+
+        genes_grouped = split_by_variant(gene_analysis)
+        variants_grouped = split_by_variant(variant_narrative)
+        evidences_grouped = split_by_variant(evidence_records)
+
+        all_indices = sorted(list(set(genes_grouped.keys()) | set(variants_grouped.keys()) | set(evidences_grouped.keys())))
+        
+        combined = []
+        for idx in all_indices:
+            header = ""
+            if idx in genes_grouped:
+                header = genes_grouped[idx]["header"]
+            elif idx in variants_grouped:
+                header = variants_grouped[idx]["header"]
+            elif idx in evidences_grouped:
+                header = evidences_grouped[idx]["header"]
+                header = re.sub(r'\s*Evidence:?$', '', header, flags=re.IGNORECASE)
+
+            header_clean = re.sub(r'^###\s*', '', header).strip()
+            header_clean = re.sub(r':$', '', header_clean).strip()
+            
+            combined.append({
+                "index": idx,
+                "header": header_clean,
+                "gene_summary": genes_grouped.get(idx, {}).get("content", ""),
+                "variant_summary": variants_grouped.get(idx, {}).get("content", ""),
+                "evidence_summary": evidences_grouped.get(idx, {}).get("content", "")
+            })
+        return combined
+
+    # Group and output narratives variant-by-variant
+    grouped_narratives = group_narratives_by_variant(
+        cleaned_narratives.get("gene_analysis", ""),
+        cleaned_narratives.get("variant_narrative", ""),
+        cleaned_narratives.get("evidence_records", "")
+    )
     
-    # Variant Narrative
-    h3_2 = doc.add_heading(level=2)
-    h3_2.add_run("Variant Narrative").font.color.rgb = RGBColor(71, 85, 105)
-    doc.add_paragraph(report_draft_parsed.get("variant_narrative", "No variant narrative has been synthesized."))
-    
-    # Evidence Records
-    h3_3 = doc.add_heading(level=2)
-    h3_3.add_run("Evidence Records & Literature Summaries").font.color.rgb = RGBColor(71, 85, 105)
-    doc.add_paragraph(report_draft_parsed.get("evidence_records", "No evidence records narrative has been synthesized."))
+    if not grouped_narratives:
+        p = doc.add_paragraph()
+        run_empty = p.add_run("No detailed interpretative narratives are available.")
+        run_empty.font.name = 'Arial'
+        run_empty.font.size = Pt(10)
+    else:
+        for item in grouped_narratives:
+            # Variant heading
+            h_var = doc.add_paragraph()
+            h_var.paragraph_format.space_before = Pt(12)
+            h_var.paragraph_format.space_after = Pt(4)
+            h_var.paragraph_format.keep_with_next = True
+            run_h_var = h_var.add_run(item["header"])
+            run_h_var.font.name = 'Arial'
+            run_h_var.font.bold = True
+            run_h_var.font.size = Pt(11.5)
+            run_h_var.font.color.rgb = RGBColor(71, 85, 105)
+            
+            # Gene Clinical Summary
+            p_lbl_gene = doc.add_paragraph()
+            p_lbl_gene.paragraph_format.space_before = Pt(4)
+            p_lbl_gene.paragraph_format.space_after = Pt(2)
+            p_lbl_gene.paragraph_format.keep_with_next = True
+            run_lbl_gene = p_lbl_gene.add_run("Gene Clinical Summary:")
+            run_lbl_gene.font.name = 'Arial'
+            run_lbl_gene.font.bold = True
+            run_lbl_gene.font.size = Pt(10)
+            
+            add_markdown_to_docx(doc, item["gene_summary"] if item["gene_summary"] else "No gene summary is available.")
+            
+            # Variant Summary
+            p_lbl_var = doc.add_paragraph()
+            p_lbl_var.paragraph_format.space_before = Pt(6)
+            p_lbl_var.paragraph_format.space_after = Pt(2)
+            p_lbl_var.paragraph_format.keep_with_next = True
+            run_lbl_var = p_lbl_var.add_run("Variant Summary:")
+            run_lbl_var.font.name = 'Arial'
+            run_lbl_var.font.bold = True
+            run_lbl_var.font.size = Pt(10)
+            
+            add_markdown_to_docx(doc, item["variant_summary"] if item["variant_summary"] else "No variant summary is available.")
+            
+            # Evidence Summary
+            p_lbl_ev = doc.add_paragraph()
+            p_lbl_ev.paragraph_format.space_before = Pt(6)
+            p_lbl_ev.paragraph_format.space_after = Pt(2)
+            p_lbl_ev.paragraph_format.keep_with_next = True
+            run_lbl_ev = p_lbl_ev.add_run("Evidence Summary:")
+            run_lbl_ev.font.name = 'Arial'
+            run_lbl_ev.font.bold = True
+            run_lbl_ev.font.size = Pt(10)
+            
+            add_markdown_to_docx(doc, item["evidence_summary"] if item["evidence_summary"] else "No evidence summary is available.")
+
+    # Section 4: Variants of Unknown Significance (VUS)
+    vus_variants = [v for v in confirmed_variants if "tier 3" in v.get("tier", "").lower()]
+    if vus_variants:
+        h4 = doc.add_heading(level=1)
+        run_h4 = h4.add_run("4. Variants of Unknown Significance")
+        run_h4.font.name = 'Arial'
+        run_h4.font.color.rgb = RGBColor(15, 23, 42)
+        
+        p_vus_intro = doc.add_paragraph()
+        p_vus_intro.paragraph_format.space_before = Pt(4)
+        p_vus_intro.paragraph_format.space_after = Pt(6)
+        run_vus_intro = p_vus_intro.add_run("The following variants are classified as Variants of Unknown Significance (VUS) / Tier 3 based on current guidelines.")
+        run_vus_intro.font.name = 'Arial'
+        run_vus_intro.font.size = Pt(10)
+        run_vus_intro.font.italic = True
+        
+        vus_table = doc.add_table(rows=1, cols=4)
+        vus_table.style = 'Table Grid'
+        
+        headers = ["Gene Name", "Variant", "Consequence", "Allele Frequency"]
+        hdr_cells = vus_table.rows[0].cells
+        for col_idx, h_text in enumerate(headers):
+            p = hdr_cells[col_idx].paragraphs[0]
+            run = p.add_run(h_text)
+            run.font.name = 'Arial'
+            run.font.bold = True
+            run.font.size = Pt(9.5)
+            
+        for v in vus_variants:
+            row_cells = vus_table.add_row().cells
+            
+            gene_name = v.get("gene", "")
+            cdna = v.get("cdna", "")
+            consequence = v.get("consequence", "")
+            is_splice = consequence and "splice" in consequence.lower()
+            p_notation = "" if is_splice else format_protein_change(v.get("protein", ""), consequence)
+            variant_str = f"{cdna} {p_notation}".strip()
+            
+            consequence_clean = ""
+            if consequence:
+                parts = consequence.split('&')
+                consequence_clean = ' & '.join(
+                    p.replace("_variant", "").replace("_", " ").title() for p in parts
+                )
+            else:
+                consequence_clean = "Unknown"
+                
+            af_val = v.get("af", 0.0)
+            if isinstance(af_val, str):
+                try:
+                    af_val = float(af_val)
+                except ValueError:
+                    af_val = 0.0
+            af_str = f"{af_val * 100:.2f}%" if af_val else "0.00%"
+            
+            for col_idx, val in enumerate([
+                gene_name, variant_str, consequence_clean, af_str
+            ]):
+                p = row_cells[col_idx].paragraphs[0]
+                run = p.add_run(val)
+                run.font.name = 'Arial'
+                run.font.size = Pt(9.5)
+                
+        doc.add_paragraph() # Spacing
+
+    # Section 5: References
+    if final_references:
+        h_ref = doc.add_heading(level=1)
+        section_num = 5 if vus_variants else 4
+        run_href = h_ref.add_run(f"{section_num}. References")
+        run_href.font.name = 'Arial'
+        run_href.font.color.rgb = RGBColor(15, 23, 42)
+        
+        # Add references text as markdown block
+        ref_block = "\n".join(final_references)
+        add_markdown_to_docx(doc, ref_block)
 
     # Save doc to memory stream
     file_stream = io.BytesIO()

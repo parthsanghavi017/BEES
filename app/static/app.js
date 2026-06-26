@@ -39,7 +39,7 @@ async function checkSession() {
     try {
         const response = await fetch("/api/auth/me");
         if (response.ok) {
-            currentUser = await response.ok ? await response.json() : null;
+            currentUser = await response.json();
             if (currentUser) {
                 showDashboard(currentUser);
             } else {
@@ -221,6 +221,7 @@ async function fetchDashboardStats() {
 }
 
 async function fetchCases() {
+    fetchDashboardStats();
     const tableBody = document.getElementById("cases-table-body");
     try {
         const response = await fetch("/api/cases");

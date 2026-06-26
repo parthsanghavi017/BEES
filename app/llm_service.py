@@ -6,36 +6,6 @@ from civicpy import civic
 import ollama
 logger = logging.getLogger(__name__)
 
-def fetch_civic_gene_description_live(gene_name: str) -> str:
-    import urllib.request
-    
-    query = """
-    query GetGeneDescription($symbols: [String!]) {
-      genes(entrezSymbols: $symbols) {
-        nodes {
-          description
-        }
-      }
-    }
-    """
-    try:
-        payload = {"query": query, "variables": {"symbols": [gene_name.upper().strip()]}}
-        req = urllib.request.Request(
-            "https://civicdb.org/api/graphql",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            res_data = json.loads(resp.read().decode("utf-8"))
-            nodes = res_data.get("data", {}).get("genes", {}).get("nodes", [])
-            if nodes:
-                node = nodes[0]
-                desc = node.get("description")
-                if desc:
-                    return desc
-    except Exception as e:
-        logger.error(f"Live GraphQL query failed for gene description of {gene_name}: {e}")
-    return ""
 
 
 def format_protein_change(protein: str, consequence: str = "") -> str:
@@ -52,6 +22,59 @@ def format_protein_change(protein: str, consequence: str = "") -> str:
     if clean in ("?", "", "unknown") or "?" in clean:
         return ""
     return f"p.{clean}"
+
+
+def parse_local_gene_description(gene_name: str) -> str:
+    import os
+    import re
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    gene_desc_dir = os.path.join(os.path.dirname(app_dir), "Gene_Desc")
+    file_path = os.path.join(gene_desc_dir, f"{gene_name.upper().strip()}.txt")
+    if not os.path.exists(file_path):
+        return ""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        significance_pattern = re.compile(
+            r"##\s*Clinical\s+Significance\s*\n(.*?)(?=\n##|$)", 
+            re.IGNORECASE | re.DOTALL
+        )
+        significance_match = significance_pattern.search(content)
+        if not significance_match:
+            return ""
+        significance_text = significance_match.group(1).strip()
+        references_pattern = re.compile(
+            r"##\s*References\s*\n(.*)", 
+            re.IGNORECASE | re.DOTALL
+        )
+        references_match = references_pattern.search(content)
+        appropriate_references = []
+        if references_match:
+            references_text = references_match.group(1).strip()
+            ref_lines = [line.strip() for line in references_text.split("\n") if line.strip()]
+            for line in ref_lines:
+                key_match = re.search(r"\(([^)]+)\)", line)
+                if key_match:
+                    ref_key = key_match.group(1)
+                    if ref_key in significance_text:
+                        appropriate_references.append(line)
+        renumbered_references = []
+        for idx, ref in enumerate(appropriate_references, 1):
+            ref_cleaned = ref
+            bracket_match = re.match(r"^\[\s*\d+\.\s+(\([^)]+\))", ref)
+            nobracket_match = re.match(r"^\d+\.\s+(\([^)]+\))", ref)
+            if bracket_match:
+                ref_cleaned = re.sub(r"^\[\s*\d+\.\s+", f"[{idx}. ", ref)
+            elif nobracket_match:
+                ref_cleaned = re.sub(r"^\d+\.\s+", f"{idx}. ", ref)
+            renumbered_references.append(ref_cleaned)
+        output = f"## Clinical Significance\n{significance_text}"
+        if renumbered_references:
+            output += "\n\n## References\n" + "\n\n".join(renumbered_references)
+        return output
+    except Exception as e:
+        logger.error(f"Error parsing local gene description for {gene_name}: {e}")
+        return ""
 
 
 class LlmSynthesisService:
@@ -109,6 +132,20 @@ class LlmSynthesisService:
                 "evidence_records": "No confirmed variants selected for this report."
             }
 
+        # Summaries are reserved exclusively for Tier 1 and Tier 2 variants. Filter out Tier 3 / VUS.
+        synthesis_variants = []
+        for v in confirmed_variants:
+            t_str = str(v.get("tier", "")).lower()
+            if "tier 1" in t_str or "tier 2" in t_str:
+                synthesis_variants.append(v)
+
+        if not synthesis_variants:
+            return {
+                "gene_analysis": "No Tier 1 or 2 variants confirmed.",
+                "variant_narrative": "No Tier 1 or 2 variants confirmed.",
+                "evidence_records": "No Tier 1 or 2 variants confirmed."
+            }
+
         gene_summaries = []
         variant_narratives = []
         evidence_summaries = []
@@ -124,7 +161,7 @@ class LlmSynthesisService:
 
         client = ollama.AsyncClient(host="http://127.0.0.1:11434")
 
-        for idx, variant in enumerate(confirmed_variants, 1):
+        for idx, variant in enumerate(synthesis_variants, 1):
             gene_name = variant.get("gene", "Unknown Gene")
             hgvsg = variant.get("hgvsg", "Unknown HGVSg")
             cdna = variant.get("cdna", "Unknown HGVSc")
@@ -151,6 +188,13 @@ class LlmSynthesisService:
                 except Exception as e:
                     logger.error(f"Failed to fetch live gene description for {gene_name}: {e}")
 
+            # Fallback to local Gene_Desc folder if civic description is empty
+            if not gene_description:
+                try:
+                    gene_description = parse_local_gene_description(gene_name)
+                except Exception as e:
+                    logger.error(f"Failed to parse local gene description for {gene_name}: {e}")
+
             if not gene_description:
                 gene_description = f"No curated gene description is available in the local knowledgebase for {gene_name}."
 
@@ -161,12 +205,18 @@ class LlmSynthesisService:
             # Format protein change and check if splice variant
             is_splice = consequence and "splice" in consequence.lower()
             p_notation = format_protein_change(protein, consequence)
+            c_notation = cdna.strip() if cdna else ""
+
+            # Determine the variant title header pattern (splice: Gene c.; non-splice: Gene p. c.)
+            if is_splice:
+                header_detail = f"{gene_name} {c_notation}".strip()
+            elif p_notation:
+                header_detail = f"{gene_name} {p_notation} {c_notation}".strip()
+            else:
+                header_detail = f"{gene_name} {c_notation}".strip()
 
             # Task 1: Gene Summary (Directly assign CIViC Gene Description without Ollama query)
-            if p_notation:
-                gene_summaries.append(f"### Variant {idx} ({gene_name} {p_notation}):\n{gene_description}")
-            else:
-                gene_summaries.append(f"### Variant {idx} ({gene_name}):\n{gene_description}")
+            gene_summaries.append(f"### Variant {idx} ({header_detail}):\n{gene_description}")
 
             # Task 2: Variant Summary
             splice_status = ""
@@ -177,6 +227,15 @@ class LlmSynthesisService:
                     splice_status = "splice acceptor site"
                 else:
                     splice_status = "splice site"
+
+            # Format AF as percentage for prompt
+            af_val = variant.get("af", 0.0)
+            if isinstance(af_val, str):
+                try:
+                    af_val = float(af_val)
+                except ValueError:
+                    af_val = 0.0
+            af_pct = f"{af_val * 100:.2f}%"
 
             task2_prompt = (
                 f"Task: Convert the following structured mutational data into a clean, professional, grammatically "
@@ -190,13 +249,14 @@ class LlmSynthesisService:
                 f"- Consequence: {consequence}\n"
                 f"- Impact: {impact}\n"
                 f"- Exon: {exon}\n"
+                f"- Allele Frequency: {af_pct}\n"
             )
             if is_splice:
                 task2_prompt += f"- Splice Status: {splice_status}\n"
-                task2_prompt += f"- Note: Indicate that the variant is a splice variant and state its status ({splice_status}). Do not show a protein change (p.) notation.\n"
+                task2_prompt += f"- Note: Indicate that the variant is a splice variant and state its status ({splice_status}). Do not show a protein change (p.) notation. Include the Allele Frequency ({af_pct}) in the narrative.\n"
             else:
                 task2_prompt += f"- Protein Change (HGVSp): {p_notation}\n"
-                task2_prompt += f"- Note: Show the protein change ({p_notation}) without brackets.\n"
+                task2_prompt += f"- Note: Show the protein change ({p_notation}) without brackets. Include the Allele Frequency ({af_pct}) in the narrative.\n"
 
             task2_prompt += "\nGenerate a professional clinical narrative summarizing these variant metrics under the constraints specified."
 
@@ -210,16 +270,10 @@ class LlmSynthesisService:
                     ]
                 )
                 var_narrative = t2_response["message"]["content"].strip()
-                if p_notation:
-                    variant_narratives.append(f"### Variant {idx} ({gene_name} {p_notation}):\n{var_narrative}")
-                else:
-                    variant_narratives.append(f"### Variant {idx} ({gene_name}):\n{var_narrative}")
+                variant_narratives.append(f"### Variant {idx} ({header_detail}):\n{var_narrative}")
             except Exception as e:
                 logger.error(f"Ollama Task 2 failed for variant {hgvsg}: {e}")
-                if p_notation:
-                    variant_narratives.append(f"### Variant {idx} ({gene_name} {p_notation}):\n[Error synthesizing variant narrative: {e}]")
-                else:
-                    variant_narratives.append(f"### Variant {idx} ({gene_name}):\n[Error synthesizing variant narrative: {e}]")
+                variant_narratives.append(f"### Variant {idx} ({header_detail}):\n[Error synthesizing variant narrative: {e}]")
 
             # Task 3: Evidence Summary
             if cleaned_evidence:
@@ -269,15 +323,9 @@ class LlmSynthesisService:
                         logger.error(f"Ollama Task 3 failed for evidence {citation_id}: {e}")
                         ev_blocks.append(f"**Evidence {ev_idx} [{citation_id}]:** [Error generating summary: {e}]")
 
-                if p_notation:
-                    evidence_summaries.append(f"### Variant {idx} ({gene_name} {p_notation}) Evidence:\n" + "\n\n".join(ev_blocks))
-                else:
-                    evidence_summaries.append(f"### Variant {idx} ({gene_name}) Evidence:\n" + "\n\n".join(ev_blocks))
+                evidence_summaries.append(f"### Variant {idx} ({header_detail}) Evidence:\n" + "\n\n".join(ev_blocks))
             else:
-                if p_notation:
-                    evidence_summaries.append(f"### Variant {idx} ({gene_name} {p_notation}) Evidence:\nNo accepted level A, B, or D evidence items found.")
-                else:
-                    evidence_summaries.append(f"### Variant {idx} ({gene_name}) Evidence:\nNo accepted level A, B, or D evidence items found.")
+                evidence_summaries.append(f"### Variant {idx} ({header_detail}) Evidence:\nNo accepted level A, B, or D evidence items found.")
 
         return {
             "gene_analysis": "\n\n".join(gene_summaries),

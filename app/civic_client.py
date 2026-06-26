@@ -129,6 +129,30 @@ def matches_variant(var_gene: str, var_protein: str, var_cdna: str, var_conseque
                 if abs(db_exon - var_exon_num) <= 1:
                     return True
 
+    # 8. Generic/Mutation Type match (e.g., MISSENSE, FRAMESHIFT, SPLICE, LOSS-OF-FUNCTION, or generic MUTATION)
+    db_clean = norm_db.replace("VARIANT", "").replace("MUTATION", "").replace("CHANGE", "").strip()
+    conseq_lower = var_consequence.lower() if var_consequence else ""
+    
+    if db_clean in ("MUT", "MUTATION"):
+        return True
+        
+    if "MISSENSE" in db_clean:
+        if "missense" in conseq_lower:
+            return True
+            
+    if "FRAMESHIFT" in db_clean or "FS" in db_clean:
+        if "frameshift" in conseq_lower:
+            return True
+            
+    if "SPLICE" in db_clean:
+        if "splice" in conseq_lower:
+            return True
+            
+    if "LOSS-OF-FUNCTION" in db_clean or "LOSS OF FUNCTION" in db_clean or "LOF" in db_clean:
+        # Standard LOF consequences
+        if any(term in conseq_lower for term in ["frameshift", "stop_gained", "splice_donor", "splice_acceptor"]):
+            return True
+
     return False
 
 def fetch_civic_evidence(gene: str, protein: str, cdna: str, consequence: str = "", exon: str = "") -> List[Dict[str, Any]]:
@@ -200,6 +224,7 @@ def fetch_civic_evidence(gene: str, protein: str, cdna: str, consequence: str = 
                     # Map Tier and Level
                     civic_level = getattr(e, "evidence_level", "")
                     tier, level = map_civic_level_to_tier_level(civic_level)
+                    eid = f"EID{e.id}" if hasattr(e, "id") and e.id else ""
 
                     results.append({
                         "tier": tier,
@@ -211,7 +236,8 @@ def fetch_civic_evidence(gene: str, protein: str, cdna: str, consequence: str = 
                         "response": response,
                         "pmids": first_pmid,
                         "source": "CIViC",
-                        "description": getattr(e, "description", "")
+                        "description": getattr(e, "description", ""),
+                        "eid": eid
                     })
     except Exception as ex:
         logger.error(f"civicpy query failed for {gene} {protein} {cdna}: {ex}")

@@ -5,6 +5,8 @@ let variantsData = [];
 let selectedSet = new Set();
 let currentSortCol = null;
 let currentSortDir = 'asc'; // 'asc' or 'desc'
+let indicationsList = [];
+let filteredVariantsList = [];
 
 function formatBadgeList(str, type) {
     if (!str || str === "None" || str === "none") {
@@ -87,10 +89,11 @@ function formatProteinChange(protein, keepPrefix = true) {
 }
 
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
     extractCaseId();
     if (caseId) {
-        loadReviewData();
+        await loadIndications();
+        await loadReviewData();
         setupListeners();
     } else {
         showError("Invalid Case ID in URL pathway.");
@@ -145,8 +148,8 @@ async function loadReviewData() {
         // Render Match Statistics
         renderStatistics();
         
-        // Initial Table Render
-        renderVariantsTable();
+        // Initial Table Render through filters logic
+        applyFilters();
 
         // Restore previously confirmed variants if they exist
         if (caseData.confirmed_variants) {
@@ -155,7 +158,7 @@ async function loadReviewData() {
                 confirmed.forEach(cv => {
                     selectedSet.add(cv.hgvsg);
                 });
-                renderVariantsTable(); // Re-render to check correct rows
+                applyFilters(); // Re-render to check correct rows
                 updateProceedButton();
             } catch (e) {
                 console.error("Failed to restore confirmed variants:", e);
@@ -211,19 +214,21 @@ function renderFunnel() {
     }
 }
 
-function renderVariantsTable() {
+function renderVariantsTable(customData) {
     const tableBody = document.getElementById("variants-table-body");
     tableBody.innerHTML = "";
 
-    if (variantsData.length === 0) {
+    const data = customData || filteredVariantsList;
+
+    if (data.length === 0) {
         tableBody.innerHTML = `
             <tr>
-                <td colspan="16" class="table-placeholder">Zero genomic variants survived the hard-filtering checks for this clinical case.</td>
+                <td colspan="18" class="table-placeholder">Zero genomic variants match the active filters for this clinical case.</td>
             </tr>`;
         return;
     }
 
-    variantsData.forEach((v) => {
+    data.forEach((v) => {
         const tr = document.createElement("tr");
         
         const isChecked = selectedSet.has(v.hgvsg) ? "checked" : "";
@@ -250,6 +255,7 @@ function renderVariantsTable() {
 
         const isSplice = v.consequence && v.consequence.toLowerCase().includes("splice");
         const displayProtein = isSplice ? v.cdna : formatProteinChange(v.protein, true);
+        const afSampleStr = v.af !== undefined && v.af !== null ? `${(v.af * 100).toFixed(2)}%` : "0.00%";
 
         tr.innerHTML = `
             <td style="text-align: center;">
@@ -259,6 +265,7 @@ function renderVariantsTable() {
             <td>${geneCellContent}</td>
             <td><span style="font-family: monospace;">${escapeHtml(v.cdna)}</span></td>
             <td><span style="font-family: monospace; font-weight: bold; color: #f1f5f9;">${escapeHtml(displayProtein)}</span></td>
+            <td><span style="font-family: monospace;">${afSampleStr}</span></td>
             <td><span class="transcript-ref">${v.transcript_type}</span></td>
             <td><span style="font-family: monospace;">${escapeHtml(v.transcript_id)}</span></td>
             <td><span class="impact-badge ${impactClass}">${consequenceText}</span></td>
@@ -434,7 +441,7 @@ function compareHgvsg(a, b) {
 }
 
 function updateSortHeaders() {
-    const columns = ['hgvsg', 'gene', 'cdna', 'protein', 'transcript_id', 'consequence', 'gnomad_af', 'tier', 'level', 'biomarker_type', 'evidence', 'drug', 'response', 'evidence_source'];
+    const columns = ['hgvsg', 'gene', 'cdna', 'protein', 'af', 'transcript_id', 'consequence', 'gnomad_af', 'tier', 'level', 'biomarker_type', 'evidence', 'drug', 'response', 'evidence_source'];
     columns.forEach(col => {
         const span = document.getElementById(`sort-${col}`);
         if (span) {
@@ -545,6 +552,14 @@ function setupListeners() {
         }
     });
 
+    // Download Annotated VCF handler
+    const downloadVcfBtn = document.getElementById("download-vcf-button");
+    if (downloadVcfBtn) {
+        downloadVcfBtn.addEventListener("click", () => {
+            window.open(`/api/cases/${caseId}/report/vcf`, '_blank');
+        });
+    }
+
     // Download Exploded TSV handler
     const downloadTsvBtn = document.getElementById("download-tsv-button");
     if (downloadTsvBtn) {
@@ -621,6 +636,7 @@ function setupListeners() {
             const url = URL.createObjectURL(blob);
             const link = document.createElement("a");
             link.setAttribute("href", url);
+            link.setAttribute("target", "_blank");
             
             // File naming: Case_[ID]_exploded_variants.tsv
             const fileName = `Case_${caseId}_exploded_variants.tsv`;
@@ -677,50 +693,182 @@ function showGridView() {
     document.getElementById("dashboard-section").classList.remove("hidden");
 }
 
-function populateReportInfo() {
-    // 1. Demographics
-    document.getElementById("rep-patient-name").textContent = caseData.patient_name;
-    document.getElementById("rep-patient-demog").textContent = `${caseData.patient_age} / ${caseData.patient_sex}`;
-    document.getElementById("rep-patient-indication").textContent = `${caseData.indication_name} (${caseData.indication_doid})`;
-    document.getElementById("rep-patient-refs").textContent = `${caseData.reference_genome} / ${caseData.transcript_db}`;
+function formatTherapeuticResponse(biomarkerType, drug, response) {
+    if (!biomarkerType || biomarkerType.toLowerCase() !== "therapeutic") {
+        return { drug: "None", response: "None" };
+    }
+    const cleanDrug = drug && drug !== "None" ? drug : "None";
+    let cleanResponse = "None";
+    if (response && response !== "None") {
+        const respLower = response.toLowerCase();
+        if (respLower.includes("sensit")) {
+            cleanResponse = "Sensitive";
+        } else if (respLower.includes("resist") || respLower.includes("reduced") || respLower.includes("non") || respLower.includes("no")) {
+            cleanResponse = "Non-sensitive";
+        } else {
+            cleanResponse = response;
+        }
+    }
+    return { drug: cleanDrug, response: cleanResponse };
+}
 
-    // 2. Summary Table of Selected Variants
-    const summaryBody = document.getElementById("report-variants-summary-body");
-    summaryBody.innerHTML = "";
+function populateReportInfo() {
+    // 1. Demographics (13 fields, empty where not in database)
+    document.getElementById("rep-dem-provider").textContent = "";
+    document.getElementById("rep-dem-physician").textContent = "";
+    document.getElementById("rep-dem-pathologist").textContent = "";
+    document.getElementById("rep-dem-report-date").textContent = "";
+    document.getElementById("rep-dem-name").textContent = caseData.patient_name || "";
+    document.getElementById("rep-dem-age").textContent = caseData.patient_age !== undefined ? caseData.patient_age : "";
+    document.getElementById("rep-dem-sex").textContent = caseData.patient_sex || "";
+    document.getElementById("rep-dem-diagnosis").textContent = caseData.indication_name || "";
+    document.getElementById("rep-dem-stage").textContent = "";
+    document.getElementById("rep-dem-patient-id").textContent = `CASE-${String(caseData.id).padStart(4, '0')}`;
+    document.getElementById("rep-dem-collection-site").textContent = "";
+    document.getElementById("rep-dem-type").textContent = "";
+    document.getElementById("rep-dem-collection-date").textContent = "";
+
+    // 2. Summary Tables of Selected Variants (Tier 1 vs Tier 2)
+    const tier1Body = document.getElementById("report-variants-tier1-body");
+    const tier2Body = document.getElementById("report-variants-tier2-body");
+    tier1Body.innerHTML = "";
+    tier2Body.innerHTML = "";
     
     // Filter variantsData based on selectedSet
     const confirmed = variantsData.filter(v => selectedSet.has(v.hgvsg));
-    if (confirmed.length === 0) {
-        summaryBody.innerHTML = `<tr><td colspan="9" class="table-placeholder">No confirmed variants selected. Go back and select variants.</td></tr>`;
-    } else {
-        confirmed.forEach(v => {
-            const tr = document.createElement("tr");
+    
+    const tier1Variants = confirmed.filter(v => v.tier && v.tier.toLowerCase().includes("1"));
+    const tier2Variants = confirmed.filter(v => v.tier && v.tier.toLowerCase().includes("2"));
+    const vusVariants = confirmed.filter(v => v.tier && v.tier.toLowerCase().includes("3"));
+    
+    const cols = 11;
+    
+    const createExplodedRows = (v, targetBody) => {
+        const evidenceList = v.evidence_json || [];
+        
+        const gene = v.gene || "";
+        const cdna = v.cdna || "";
+        
+        const isSplice = v.consequence && v.consequence.toLowerCase().includes("splice");
+        const protein = isSplice ? "" : formatProteinChange(v.protein, true);
+        const hgvsg = v.hgvsg || "";
+        const consequence = v.consequence ? formatConsequence(v.consequence) : "Unknown";
+        
+        const getRowHtml = (ev) => {
+            let level = "VUS";
+            let biomarkerType = "None";
+            let drug = "None";
+            let response = "None";
+            let evidenceStr = "None";
             
-            // Clean up Tier and Level prefix
-            const tier_clean = v.tier ? v.tier.split(" | ").map(t => t.replace(/tier\s*/i, "").trim()).join(" | ") : "3";
-            const level_clean = v.level ? v.level.split(" | ").map(l => l.replace(/level\s*/i, "").trim()).join(" | ") : "VUS";
-            const drug_clean = v.drug ? v.drug : "None";
+            if (ev) {
+                level = ev.level ? ev.level.replace(/level\s*/i, "").trim() : "VUS";
+                biomarkerType = ev.biomarker_type ? ev.biomarker_type.trim() : "None";
+                
+                // Therapeutic mapping
+                const tf = formatTherapeuticResponse(biomarkerType, ev.drug, ev.response);
+                drug = tf.drug;
+                response = tf.response;
+                
+                // QC EID and PMID
+                let parts = [];
+                if (ev.source === "CIViC" && ev.eid) {
+                    parts.push(ev.eid);
+                }
+                if (ev.pmids && ev.pmids !== "None") {
+                    parts.push(ev.pmids);
+                }
+                evidenceStr = parts.length > 0 ? parts.join(" (") + (parts.length > 1 ? ")" : "") : "None";
+            } else {
+                level = v.level ? v.level.split(" | ")[0].replace(/level\s*/i, "").trim() : "VUS";
+                biomarkerType = v.biomarker_type ? v.biomarker_type.split(" | ")[0].trim() : "None";
+                
+                const tf = formatTherapeuticResponse(biomarkerType, v.drug ? v.drug.split(" | ")[0] : "None", v.response ? v.response.split(" | ")[0] : "None");
+                drug = tf.drug;
+                response = tf.response;
+                
+                evidenceStr = v.evidence ? v.evidence.split(" | ")[0] : "None";
+            }
             
-            // p. Notation: clean of brackets, keep prefix without brackets. Empty for splice.
-            const isSplice = v.consequence && v.consequence.toLowerCase().includes("splice");
-            const p_notation = isSplice ? "" : formatProteinChange(v.protein, true);
-            const c_notation = v.cdna ? v.cdna : "";
-            const biomarker_effect = v.response ? v.response : "None";
-            const reference_val = v.evidence ? v.evidence : "None";
+            const levelClean = level.toUpperCase() === "VUS" ? "vus" : level.toLowerCase().replace(/\s+/g, '');
+            const levelBadge = `<span class="level-badge level-${levelClean}">${escapeHtml(level)}</span>`;
+            const biomarkerClean = biomarkerType.charAt(0).toUpperCase() + biomarkerType.slice(1).toLowerCase();
             
-            tr.innerHTML = `
-                <td><strong>${escapeHtml(v.gene)}</strong></td>
-                <td><strong class="transcript-ref" style="background-color:rgba(6, 182, 212, 0.07); color:var(--color-secondary); border:1px solid rgba(6, 182, 212, 0.15);">${escapeHtml(v.hgvsg)}</strong></td>
-                <td><span style="font-family: monospace;">${escapeHtml(c_notation)}</span></td>
-                <td><span style="font-family: monospace;">${escapeHtml(p_notation)}</span></td>
-                <td>${escapeHtml(biomarker_effect)}</td>
-                <td><span class="tier-badge tier-${tier_clean.toLowerCase().includes('1') ? '1' : (tier_clean.toLowerCase().includes('2') ? '2' : '3')}">${escapeHtml(tier_clean)}</span></td>
-                <td><span class="level-badge level-${level_clean.toLowerCase()}">${escapeHtml(level_clean)}</span></td>
-                <td>${escapeHtml(drug_clean)}</td>
-                <td>${formatReferenceLinks(reference_val)}</td>
+            return `
+                <td><strong>${escapeHtml(gene)}</strong></td>
+                <td><span style="font-family: monospace;">${escapeHtml(cdna)}</span></td>
+                <td><span style="font-family: monospace;">${escapeHtml(protein)}</span></td>
+                <td><span style="font-family: monospace;" class="transcript-ref">${escapeHtml(hgvsg)}</span></td>
+                <td>${escapeHtml(consequence)}</td>
+                <td>${levelBadge}</td>
+                <td>${escapeHtml(biomarkerClean)}</td>
+                <td>${escapeHtml(drug)}</td>
+                <td>${escapeHtml(response)}</td>
+                <td>${escapeHtml(evidenceStr)}</td>
+                <td style="text-align: center;">
+                    <button type="button" class="btn btn-danger btn-xs btn-drop-variant" data-hgvsg="${hgvsg}" style="background:#ef4444; border:none; color:#fff; padding:4px 8px; border-radius:4px; font-size:0.75rem; cursor:pointer;">Drop</button>
+                </td>
             `;
-            summaryBody.appendChild(tr);
+        };
+        
+        if (evidenceList.length === 0) {
+            const tr = document.createElement("tr");
+            tr.innerHTML = getRowHtml(null);
+            targetBody.appendChild(tr);
+        } else {
+            evidenceList.forEach(ev => {
+                const tr = document.createElement("tr");
+                tr.innerHTML = getRowHtml(ev);
+                targetBody.appendChild(tr);
+            });
+        }
+    };
+    
+    if (tier1Variants.length === 0) {
+        tier1Body.innerHTML = `<tr><td colspan="${cols}" class="table-placeholder">No Tier 1 variants selected.</td></tr>`;
+    } else {
+        tier1Variants.forEach(v => {
+            createExplodedRows(v, tier1Body);
         });
+    }
+    
+    if (tier2Variants.length === 0) {
+        tier2Body.innerHTML = `<tr><td colspan="${cols}" class="table-placeholder">No Tier 2 variants selected.</td></tr>`;
+    } else {
+        tier2Variants.forEach(v => {
+            createExplodedRows(v, tier2Body);
+        });
+    }
+
+    // 4. VUS Section preview
+    const vusContainer = document.getElementById("report-vus-container");
+    const vusBody = document.getElementById("report-variants-vus-body");
+    if (vusContainer && vusBody) {
+        vusBody.innerHTML = "";
+        if (vusVariants.length > 0) {
+            vusContainer.classList.remove("hidden");
+            vusVariants.forEach(v => {
+                const tr = document.createElement("tr");
+                const isSplice = v.consequence && v.consequence.toLowerCase().includes("splice");
+                const p_notation = isSplice ? "" : formatProteinChange(v.protein, true);
+                const variant_str = `${v.cdna || ""} ${p_notation}`.trim();
+                const consequence_clean = v.consequence ? formatConsequence(v.consequence) : "Unknown";
+                const af_pct = v.af !== undefined && v.af !== null ? `${(parseFloat(v.af) * 100).toFixed(2)}%` : "0.00%";
+                
+                tr.innerHTML = `
+                    <td><strong>${escapeHtml(v.gene)}</strong></td>
+                    <td><span style="font-family: monospace;">${escapeHtml(variant_str)}</span></td>
+                    <td>${escapeHtml(consequence_clean)}</td>
+                    <td><span style="font-family: monospace;">${af_pct}</span></td>
+                    <td style="text-align: center;">
+                        <button type="button" class="btn btn-danger btn-xs btn-drop-variant" data-hgvsg="${v.hgvsg}" style="background:#ef4444; border:none; color:#fff; padding:4px 8px; border-radius:4px; font-size:0.75rem; cursor:pointer;">Drop</button>
+                    </td>
+                `;
+                vusBody.appendChild(tr);
+            });
+        } else {
+            vusContainer.classList.add("hidden");
+        }
     }
 
     // 3. Draft Narrative Blocks & button text
@@ -846,9 +994,160 @@ function setupReportListeners() {
     const docxBtn = document.getElementById("btn-download-docx");
     if (docxBtn) {
         docxBtn.addEventListener("click", () => {
-            window.location.href = `/api/cases/${caseId}/report/docx`;
+            window.open(`/api/cases/${caseId}/report/docx`, '_blank');
         });
     }
+
+    // Drop variant event delegation in report workspace
+    const reportWorkspace = document.querySelector(".report-workspace");
+    if (reportWorkspace) {
+        if (!reportWorkspace.dataset.hasDropListener) {
+            reportWorkspace.dataset.hasDropListener = "true";
+            reportWorkspace.addEventListener("click", async (e) => {
+                if (e.target.classList.contains("btn-drop-variant")) {
+                    const hgvsg = e.target.getAttribute("data-hgvsg");
+                    if (confirm(`Are you sure you want to drop variant ${hgvsg} from the report?`)) {
+                        selectedSet.delete(hgvsg);
+                        e.target.disabled = true;
+                        e.target.textContent = "Dropping...";
+                        
+                        try {
+                            const response = await fetch(`/api/cases/${caseId}/variants/confirm`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ selected_hgvsg: Array.from(selectedSet) })
+                            });
+                            
+                            if (response.ok) {
+                                const caseResp = await fetch(`/api/cases/${caseId}`);
+                                if (caseResp.ok) {
+                                    caseData = await caseResp.json();
+                                }
+                                populateReportInfo();
+                                applyFilters();
+                                updateProceedButton();
+                            } else {
+                                alert("Failed to update database variant confirmation state.");
+                                e.target.disabled = false;
+                                e.target.textContent = "Drop";
+                            }
+                        } catch (err) {
+                            console.error("Network error dropping variant:", err);
+                            alert("Network connection error communicating with BEES server.");
+                            e.target.disabled = false;
+                            e.target.textContent = "Drop";
+                        }
+                    }
+                }
+            });
+        }
+    }
+}
+
+// Collapsible Filters Sidebar & Driver Gene Filter helper methods
+function toggleSidebar() {
+    const sidebar = document.getElementById("filter-sidebar");
+    const openBtn = document.getElementById("open-sidebar-btn");
+    if (sidebar) {
+        sidebar.classList.toggle("collapsed");
+        if (sidebar.classList.contains("collapsed")) {
+            if (openBtn) openBtn.classList.remove("hidden");
+        } else {
+            if (openBtn) openBtn.classList.add("hidden");
+        }
+    }
+}
+
+async function loadIndications() {
+    try {
+        const resp = await fetch("/api/driver-genes/indications");
+        if (resp.ok) {
+            indicationsList = await resp.json();
+            populateIndicationDropdown();
+        }
+    } catch (e) {
+        console.error("Failed to load driver gene indications:", e);
+    }
+}
+
+function populateIndicationDropdown() {
+    const select = document.getElementById("sidebar-indication-filter");
+    if (!select) return;
+    select.innerHTML = '<option value="">-- Select Indication --</option>';
+    
+    indicationsList.forEach(ind => {
+        const option = document.createElement("option");
+        option.value = ind.doid;
+        option.textContent = `${ind.name} (${ind.doid}) - ${ind.gene_count} genes`;
+        select.appendChild(option);
+    });
+}
+
+function applyFilters() {
+    const geneSearch = document.getElementById("sidebar-gene-search") ? document.getElementById("sidebar-gene-search").value.trim().toLowerCase() : "";
+    const minAfVal = document.getElementById("sidebar-af-range") ? parseFloat(document.getElementById("sidebar-af-range").value) : 0;
+    
+    const t1Checked = document.getElementById("filter-tier1") ? document.getElementById("filter-tier1").checked : true;
+    const t2Checked = document.getElementById("filter-tier2") ? document.getElementById("filter-tier2").checked : true;
+    const t3Checked = document.getElementById("filter-tier3") ? document.getElementById("filter-tier3").checked : true;
+    
+    const selectedDoid = document.getElementById("sidebar-indication-filter") ? document.getElementById("sidebar-indication-filter").value : "";
+    
+    let driverGenes = [];
+    if (selectedDoid) {
+        const ind = indicationsList.find(i => i.doid === selectedDoid);
+        if (ind && ind.genes) {
+            driverGenes = ind.genes.map(g => g.toUpperCase());
+        }
+    }
+    
+    function getVariantHighestTier(v) {
+        const tStr = (v.tier || "Tier 3").toUpperCase();
+        if (tStr.includes("TIER 1")) return "Tier 1";
+        if (tStr.includes("TIER 2")) return "Tier 2";
+        if (tStr.includes("TIER 3")) return "Tier 3";
+        return "Tier 4";
+    }
+
+    filteredVariantsList = variantsData.filter(v => {
+        // Selected variants bypass all filtration to remain visible and checkable
+        if (selectedSet.has(v.hgvsg)) {
+            return true;
+        }
+
+        // Gene search filter
+        if (geneSearch && !v.gene.toLowerCase().includes(geneSearch)) {
+            return false;
+        }
+        
+        // Somatic AF filter (Altered allelic frequency)
+        const variantAf = (v.af !== undefined && v.af !== null) ? parseFloat(v.af) * 100 : 0;
+        if (variantAf < minAfVal) {
+            return false;
+        }
+        
+        // Indication driver gene match (bypasses tier filters)
+        const isDriver = selectedDoid && driverGenes.includes(v.gene.toUpperCase());
+        if (selectedDoid && isDriver) {
+            return true;
+        }
+        
+        // If an indication is selected and it's NOT a driver gene, we filter it out
+        if (selectedDoid && !isDriver) {
+            return false;
+        }
+        
+        // Tier checkbox filter
+        const tier = getVariantHighestTier(v);
+        if (tier === "Tier 1" && !t1Checked) return false;
+        if (tier === "Tier 2" && !t2Checked) return false;
+        if (tier === "Tier 3" && !t3Checked) return false;
+        if (tier === "Tier 4") return false;
+        
+        return true;
+    });
+    
+    renderVariantsTable();
 }
 
 
