@@ -14,7 +14,6 @@ def fetch_civic_gene_description_live(gene_name: str) -> str:
       genes(entrezSymbols: $symbols) {
         nodes {
           description
-          myGeneInfoDetails
         }
       }
     }
@@ -34,13 +33,6 @@ def fetch_civic_gene_description_live(gene_name: str) -> str:
                 desc = node.get("description")
                 if desc:
                     return desc
-                # Fallback to myGeneInfoDetails summary
-                my_gene_info = node.get("myGeneInfoDetails")
-                if my_gene_info:
-                    details = json.loads(my_gene_info)
-                    summary = details.get("summary")
-                    if summary:
-                        return summary
     except Exception as e:
         logger.error(f"Live GraphQL query failed for gene description of {gene_name}: {e}")
     return ""
