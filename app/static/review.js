@@ -808,7 +808,7 @@ function setupReportListeners() {
             
             if (spinner) spinner.classList.remove("hidden");
             generateBtn.disabled = true;
-            if (btnText) btnText.textContent = isRegenerate ? "Regenerating..." : "Generating...";
+            if (btnText) btnText.textContent = "Generating...";
 
             try {
                 const response = await fetch(`/api/cases/${caseId}/report/generate`, {

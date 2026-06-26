@@ -4,8 +4,47 @@ from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 from civicpy import civic
 import ollama
-
 logger = logging.getLogger(__name__)
+
+def fetch_civic_gene_description_live(gene_name: str) -> str:
+    import urllib.request
+    
+    query = """
+    query GetGeneDescription($symbols: [String!]) {
+      genes(entrezSymbols: $symbols) {
+        nodes {
+          description
+          myGeneInfoDetails
+        }
+      }
+    }
+    """
+    try:
+        payload = {"query": query, "variables": {"symbols": [gene_name.upper().strip()]}}
+        req = urllib.request.Request(
+            "https://civicdb.org/api/graphql",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            res_data = json.loads(resp.read().decode("utf-8"))
+            nodes = res_data.get("data", {}).get("genes", {}).get("nodes", [])
+            if nodes:
+                node = nodes[0]
+                desc = node.get("description")
+                if desc:
+                    return desc
+                # Fallback to myGeneInfoDetails summary
+                my_gene_info = node.get("myGeneInfoDetails")
+                if my_gene_info:
+                    details = json.loads(my_gene_info)
+                    summary = details.get("summary")
+                    if summary:
+                        return summary
+    except Exception as e:
+        logger.error(f"Live GraphQL query failed for gene description of {gene_name}: {e}")
+    return ""
+
 
 def format_protein_change(protein: str, consequence: str = "") -> str:
     if consequence and "splice" in consequence.lower():
@@ -112,6 +151,13 @@ class LlmSynthesisService:
                     gene_description = civic_gene.description
             except Exception as e:
                 logger.error(f"Failed to fetch gene description from civicpy for {gene_name}: {e}")
+
+            # Fallback to live GraphQL query if description not found in local cache
+            if not gene_description:
+                try:
+                    gene_description = fetch_civic_gene_description_live(gene_name)
+                except Exception as e:
+                    logger.error(f"Failed to fetch live gene description for {gene_name}: {e}")
 
             if not gene_description:
                 gene_description = f"No curated gene description is available in the local knowledgebase for {gene_name}."
