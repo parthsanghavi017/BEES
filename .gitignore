@@ -47,3 +47,7 @@ References/refseq_109_hg38.ser
 !bees-annotator.jar
 !References/bees_ensembl_hg38.ser
 !References/bees_refseq_hg38.ser
+
+# Whitelist the bundled annotation engine components
+!bin/.bees-core.jar
+!bin/bees_annotator.py

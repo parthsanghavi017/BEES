@@ -1,9 +1,13 @@
 import os
+import sys
 import json
 import traceback
-import subprocess
 from sqlalchemy.orm import Session
 import cyvcf2
+
+# Add the bin/ directory to the import path so the annotation wrapper is importable
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin"))
+from bees_annotator import annotate_vcf as _run_annotation
 
 from app.database import SessionLocal, ClinicalCase
 
@@ -197,27 +201,16 @@ def run_variant_pipeline(case_id: int):
         # Load driver genes set
         driver_genes_set = load_driver_genes_set()
 
-        # 1. Variant Annotation Subprocess
+        # 1. Variant Annotation
         # Map transcript database preference to the serialized annotation database
         db_ser = "References/bees_ensembl_hg38.ser" if case.transcript_db == "Ensembl" else "References/bees_refseq_hg38.ser"
         db_ser_path = os.path.join(os.path.dirname(base_dir), db_ser)
-        annotation_jar = os.path.join(os.path.dirname(base_dir), "bees-annotator.jar")
-        
+
         if not os.path.exists(db_ser_path):
-            raise FileNotFoundError(f"Annotation database not found at reference path: {db_ser_path}")
-        if not os.path.exists(annotation_jar):
-            raise FileNotFoundError(f"Annotation engine not found at reference path: {annotation_jar}")
+            raise FileNotFoundError(f"Annotation database not found: {db_ser}")
 
-        annotation_cmd = [
-            "java", "-jar", annotation_jar, "annotate-vcf",
-            "-i", vcf_in_path,
-            "-o", annotation_out,
-            "-d", db_ser_path,
-            "--report-no-progress"
-        ]
-
-        # Secure subprocess execution
-        subprocess.run(annotation_cmd, capture_output=True, text=True, check=True)
+        # Delegate entirely to the annotation wrapper — implementation is internal
+        _run_annotation(vcf_in_path, annotation_out, db_ser_path)
 
         if not os.path.exists(annotation_out):
             raise FileNotFoundError("Annotation execution completed but output VCF was not created.")
