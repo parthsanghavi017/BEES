@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -39,24 +39,38 @@ class ClinicalCase(Base):
     __tablename__ = "clinical_cases"
 
     id = Column(Integer, primary_key=True, index=True)
-    patient_name = Column(String, nullable=False)
+    patient_id = Column(String, nullable=False)         # Non-identifying label: MRN, accession no., or initials
     patient_age = Column(Integer, nullable=False)
-    patient_sex = Column(String, nullable=False)  # Male, Female, Other
-    indication_doid = Column(String, nullable=False)  # e.g., DOID:162
-    indication_name = Column(String, nullable=False)  # e.g., Cancer
-    transcript_db = Column(String, nullable=False)  # Ensembl, RefSeq
-    reference_genome = Column(String, nullable=False)  # GRCh37, GRCh38
-    vcf_path = Column(String, nullable=False)  # Local storage path to ingested VCF
+    patient_sex = Column(String, nullable=False)        # Male, Female, Other
+    indication_doid = Column(String, nullable=False)    # e.g., DOID:162
+    indication_name = Column(String, nullable=False)    # e.g., Cancer
+    transcript_db = Column(String, nullable=False)      # Ensembl, RefSeq
+    reference_genome = Column(String, nullable=False)   # GRCh37, GRCh38
+    vcf_path = Column(String, nullable=False)           # Local storage path to ingested VCF
+    sha256_hash = Column(String, nullable=True)         # SHA-256 checksum of the original VCF for integrity verification
+    consent_given = Column(Boolean, default=False, nullable=False)  # Operator confirms consent was obtained
+    consent_timestamp = Column(DateTime, nullable=True)             # When consent was acknowledged
     upload_timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
     is_archived = Column(Boolean, default=False, nullable=False)
-    status = Column(String, default="Pending", nullable=False)  # Pending, Processing, Completed, Failed
-    status_message = Column(String, nullable=True)  # Error details if failed
-    filtered_variants = Column(String, nullable=True)  # Serialized JSON of surviving variants
-    confirmed_variants = Column(String, nullable=True)  # Serialized JSON of curated/confirmed variants (with evidence)
+    status = Column(String, default="Pending", nullable=False)      # Pending, Processing, Completed, Failed
+    status_message = Column(String, nullable=True)
+    filtered_variants = Column(Text, nullable=True)
+    confirmed_variants = Column(Text, nullable=True)
     total_input_variants = Column(Integer, nullable=True)
     passed_impact_variants = Column(Integer, nullable=True)
     passed_af_variants = Column(Integer, nullable=True)
-    report_draft = Column(String, nullable=True)  # JSON string containing Gene Analysis, Variant Narrative, and Evidence blocks
+    report_draft = Column(Text, nullable=True)
+
+class TokenDenylist(Base):
+    """
+    Stores invalidated JWT token IDs (jti) for explicit logout revocation.
+    Entries older than the token expiry window can be pruned periodically.
+    """
+    __tablename__ = "token_denylist"
+
+    id = Column(Integer, primary_key=True, index=True)
+    jti = Column(String, unique=True, index=True, nullable=False)  # JWT unique ID claim
+    invalidated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 # Encrypted SQLite database via SQLCipher setup
 EvidenceBase = declarative_base()
@@ -104,7 +118,7 @@ EvidenceSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=evid
 def init_db():
     """
     Creates all database tables defined in the schema.
-    Also dynamically handles schema upgrades for SQLite (adding report_draft column).
+    Dynamically handles schema upgrades (adding columns) for existing SQLite installations.
     """
     Base.metadata.create_all(bind=engine)
     try:
@@ -112,10 +126,23 @@ def init_db():
         with engine.connect() as conn:
             res = conn.execute(text("PRAGMA table_info(clinical_cases)"))
             columns = [row[1] for row in res]
-            if "report_draft" not in columns:
-                conn.execute(text("ALTER TABLE clinical_cases ADD COLUMN report_draft TEXT"))
-                # Commit if necessary depending on transactional context, SQLite usually autocommits DDL
-                print("[DATABASE] Successfully added report_draft column to clinical_cases table.")
+
+            # Migrate legacy patient_name -> patient_id
+            if "patient_name" in columns and "patient_id" not in columns:
+                conn.execute(text("ALTER TABLE clinical_cases RENAME COLUMN patient_name TO patient_id"))
+                print("[DATABASE] Migrated column: patient_name -> patient_id")
+
+            # Add new compliance columns if missing
+            additions = {
+                "report_draft": "TEXT",
+                "sha256_hash": "TEXT",
+                "consent_given": "BOOLEAN DEFAULT 0",
+                "consent_timestamp": "DATETIME",
+            }
+            for col, col_type in additions.items():
+                if col not in columns:
+                    conn.execute(text(f"ALTER TABLE clinical_cases ADD COLUMN {col} {col_type}"))
+                    print(f"[DATABASE] Added column: clinical_cases.{col}")
     except Exception as e:
         print(f"[DATABASE] Schema upgrade warning: {e}")
 

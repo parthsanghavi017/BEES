@@ -24,8 +24,8 @@ class Token(BaseModel):
     token_type: str
 
 class ClinicalCaseCreate(BaseModel):
-    patient_name: constr(min_length=1, max_length=100) = Field(
-        ..., description="Patient name or identifier (non-empty)"
+    patient_id: constr(min_length=1, max_length=100) = Field(
+        ..., description="Non-identifying patient label: MRN, accession number, or initials. Do not enter full names."
     )
     patient_age: int = Field(
         ..., ge=0, le=125, description="Patient age must be an integer between 0 and 125"
@@ -69,7 +69,7 @@ class ClinicalCaseCreate(BaseModel):
 
 class ClinicalCaseResponse(BaseModel):
     id: int
-    patient_name: str
+    patient_id: str
     patient_age: int
     patient_sex: str
     indication_doid: str
@@ -77,6 +77,8 @@ class ClinicalCaseResponse(BaseModel):
     transcript_db: str
     reference_genome: str
     vcf_path: str
+    sha256_hash: Optional[str] = None
+    consent_given: bool = False
     upload_timestamp: datetime
     is_archived: bool
     status: str

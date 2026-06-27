@@ -138,14 +138,18 @@
         <div id="case-modal" class="modal-overlay hidden">
             <div class="modal-card">
                 <div class="modal-header">
-                    <h2>Ingest Patient VCF</h2>
+                    <h2>Ingest VCF — New Case</h2>
                     <button class="modal-close">&times;</button>
+                </div>
+                <div class="privacy-notice-banner">
+                    <span class="privacy-icon">🔒</span>
+                    <span><strong>Privacy Notice:</strong> Do not enter any directly identifiable information (full name, date of birth, national ID). Use a hospital MRN, accession number, or anonymous initials only. Consent must be obtained before ingestion per HIPAA / DPDP Act 2023.</span>
                 </div>
                 <form id="create-case-form" enctype="multipart/form-data">
                     <div class="form-row">
                         <div class="form-group col-8">
-                            <label for="case-patient-name">Patient Name / Identifier</label>
-                            <input type="text" id="case-patient-name" required placeholder="e.g. PT-4091">
+                            <label for="case-patient-id">Patient Identifier (MRN / Accession No. / Initials)</label>
+                            <input type="text" id="case-patient-id" required placeholder="e.g. MRN-4091 or PT-A">
                         </div>
                         <div class="form-group col-4">
                             <label for="case-patient-age">Age (Years)</label>
@@ -211,6 +215,14 @@
 
                     <div id="case-error" class="alert alert-danger hidden"></div>
                     <div id="case-success" class="alert alert-success hidden">Case submitted successfully!</div>
+
+                    <!-- Consent Acknowledgement (HIPAA § & DPDP §7) -->
+                    <div class="consent-block">
+                        <label class="consent-label" for="case-consent-checkbox">
+                            <input type="checkbox" id="case-consent-checkbox" required>
+                            <span>I confirm that processing consent has been obtained from the data principal in accordance with applicable regulations (HIPAA / DPDP Act 2023 §7) and that no directly identifiable information has been entered above.</span>
+                        </label>
+                    </div>
 
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary modal-close-btn">Cancel</button>

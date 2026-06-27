@@ -652,14 +652,22 @@ function setupCaseSubmission() {
         caseError.classList.add("hidden");
         caseSuccess.classList.add("hidden");
 
-        const patientName = document.getElementById("case-patient-name").value.trim();
+        const patientId = document.getElementById("case-patient-id").value.trim();
         const patientAge = document.getElementById("case-patient-age").value;
         const patientSex = document.getElementById("case-patient-sex").value;
         const transcriptDb = document.getElementById("case-transcript-db").value;
         const referenceGenome = document.getElementById("case-reference-genome").value;
+        const consentGiven = document.getElementById("case-consent-checkbox").checked;
         
         const indicationDoid = document.getElementById("case-indication-doid").value;
         const indicationName = document.getElementById("case-indication-name").value;
+
+        // Validate consent
+        if (!consentGiven) {
+            caseError.textContent = "You must acknowledge the consent statement before ingesting a case.";
+            caseError.classList.remove("hidden");
+            return;
+        }
 
         // Validate DOID has been selected
         if (!indicationDoid || !indicationName) {
@@ -681,13 +689,14 @@ function setupCaseSubmission() {
 
         // Construct multi-part payload
         const formData = new FormData();
-        formData.append("patient_name", patientName);
+        formData.append("patient_id", patientId);
         formData.append("patient_age", patientAge);
         formData.append("patient_sex", patientSex);
         formData.append("transcript_db", transcriptDb);
         formData.append("reference_genome", referenceGenome);
         formData.append("indication_doid", indicationDoid);
         formData.append("indication_name", indicationName);
+        formData.append("consent_given", consentGiven ? "true" : "false");
         formData.append("vcf_file", selectedVcfFile);
 
         try {
@@ -770,7 +779,7 @@ function startPolling() {
                         <td><span class="case-id">CASE-${c.id.toString().padStart(4, '0')}</span></td>
                         <td>
                             <div class="case-demog">
-                                <strong>${escapeHtml(c.patient_name)}</strong>
+                                <strong>${escapeHtml(c.patient_id)}</strong>
                                 <span class="case-demog-sub">Age ${c.patient_age} • ${c.patient_sex}</span>
                             </div>
                         </td>

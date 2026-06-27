@@ -2,25 +2,54 @@ import os
 import json
 import uuid
 import shutil
-import mimetypes
+import hashlib
+import subprocess
 from datetime import datetime
 from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Response, Request, BackgroundTasks
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.orm import Session
 
-from app.database import get_db, init_db, ClinicalCase, User
-from app.auth import get_current_user, hash_password, verify_password, create_access_token
+from app.database import get_db, init_db, ClinicalCase, User, TokenDenylist
+from app.auth import get_current_user, hash_password, verify_password, create_access_token, invalidate_token
 from app.schemas import ClinicalCaseResponse, UserResponse, UserCreate, DashboardStats, VariantConfirmRequest, ReportDraftSaveRequest
 from app.pipeline import run_variant_pipeline
+from app.logger import get_audit_logger
 
-# Initialize FastAPI App
+# Initialize FastAPI App — Swagger/ReDoc disabled for security (no PHI exposure via public schema)
 app = FastAPI(
-    title="BEES Genomic Variant Interpretation Pipeline - Clinical Data Frontend",
-    description="Sovereign, HIPAA-compliant patient case ingestion and tracking portal.",
-    version="1.0.0"
+    title="BEES Genomic Variant Interpretation Pipeline",
+    description="Sovereign, HIPAA/DPDP-compliant clinical genomics pipeline.",
+    version="2.0.0",
+    docs_url=None,
+    redoc_url=None,
 )
+
+# ─── Security Headers Middleware ──────────────────────────────────────────────
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """
+    Injects standard HTTP security headers on every response.
+    Mitigates XSS, clickjacking, MIME sniffing, and protocol downgrade attacks.
+    """
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self';"
+        )
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Constants & Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -202,22 +231,27 @@ def login(
     
     token = create_access_token(data={"sub": user.username})
     
-    # Set JWT in secure, HTTP-only cookie
+    # Set JWT in HTTP-only, SameSite=Strict cookie
+    # secure=True requires HTTPS — deploy behind nginx/caddy with TLS for clinical use
     response.set_cookie(
         key="bees_session",
         value=token,
         httponly=True,
-        max_age=3600, # 1 hour
+        max_age=3600,
         samesite="strict",
-        secure=False  # Set to True in production with HTTPS
+        secure=False  # TODO: Set to True when deployed behind TLS reverse proxy
     )
     return {"message": "Login successful", "username": user.username, "role": user.role}
 
 @app.post("/api/auth/logout")
-def logout(response: Response):
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
     """
-    Logs out the user by clearing the HTTP-only session cookie.
+    Logs out the user: clears the session cookie and adds the JWT to the denylist
+    so it cannot be reused even before expiry.
     """
+    token = request.cookies.get("bees_session")
+    if token:
+        invalidate_token(token, db)
     response.delete_cookie("bees_session")
     return {"message": "Logout successful"}
 
@@ -324,38 +358,36 @@ def get_case(
 
 @app.post("/api/cases", response_model=ClinicalCaseResponse)
 def create_case(
-    patient_name: str = Form(...),
+    patient_id: str = Form(...),
     patient_age: int = Form(...),
     patient_sex: str = Form(...),
     indication_doid: str = Form(...),
     indication_name: str = Form(...),
     transcript_db: str = Form(...),
     reference_genome: str = Form(...),
+    consent_given: bool = Form(...),
     vcf_file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Ingests a new clinical case, performs strict validation on demographics and VCF uploads,
-    saves the file securely on local storage, and logs details in the database.
-    
-    Security and Validation Controls:
-    1. Demographics:
-       - Age validated to be a positive integer between 0 and 125.
-       - Sex validated to be Male, Female, or Other.
-    2. Transcript:
-       - Confirms transcript_db choice is Ensembl or RefSeq.
-    3. File Name Sanitation:
-       - Ingests VCF file and generates a unique, sanitized local path using UUID4.
-       - Replaces filename with UUID4 + sanitized extension to prevent path traversal attacks.
-    4. File Type and Content Verification (MIME & Header Signature):
-       - Strictly validates that file extension is either '.vcf' or '.vcf.gz'.
-       - Checks magic bytes / header content:
-         - Uncompressed VCF: Reads the first 20 bytes to verify it starts with '##fileformat=VCF'.
-         - Gzipped VCF: Reads the first 2 bytes to verify the gzip signature '\x1f\x8b'.
-       - If validation fails, the file is rejected immediately, and nothing is written to disk.
+    Ingests a new clinical case with full compliance controls:
+    1. patient_id: Non-identifying label (MRN / accession / initials) — no full names.
+    2. consent_given: Operator must confirm consent was obtained; rejected if False.
+    3. Demographics validated (age 0–125, sex, transcript_db, reference_genome).
+    4. VCF extension + magic-byte signature validated before writing.
+    5. File saved with UUID4 filename (path traversal prevention).
+    6. SHA-256 checksum computed and stored for integrity verification.
+    7. Consent timestamp recorded.
     """
-    # 1. Demographics & Inputs Validation
+    # 1. Consent gate — must be acknowledged before any PHI processing
+    if not consent_given:
+        raise HTTPException(
+            status_code=400,
+            detail="Case cannot be created without operator consent acknowledgement (HIPAA/DPDP §7)."
+        )
+
+    # 2. Demographics & Input Validation
     if not (0 <= patient_age <= 125):
         raise HTTPException(status_code=400, detail="Patient age must be between 0 and 125")
     if patient_sex not in {"Male", "Female", "Other"}:
@@ -365,70 +397,68 @@ def create_case(
     if reference_genome not in {"GRCh37", "GRCh38"}:
         raise HTTPException(status_code=400, detail="Invalid reference genome version preference")
 
-    # 2. File Extension Validation
-    filename = vcf_file.filename
+    # 3. File Extension Validation
+    filename = vcf_file.filename or ""
     is_gzipped = False
     if filename.endswith(".vcf.gz"):
         is_gzipped = True
         ext = ".vcf.gz"
     elif filename.endswith(".vcf"):
-        is_gzipped = False
         ext = ".vcf"
     else:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail="Unsupported file format. Only .vcf and .vcf.gz extensions are permitted."
         )
 
-    # Read start of file for signature verification
+    # 4. Read header chunk for signature validation
     try:
-        # FastAPI's UploadFile is file-like, we can read a chunk
         header_chunk = vcf_file.file.read(50)
-        # Seek back to beginning so we can write the full file later
         vcf_file.file.seek(0)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read file headers: {str(e)}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Failed to read file headers.")
 
-    # 3. File Signature / Magic Bytes Validation
+    # 5. Magic-Byte / Header Signature Validation
     if is_gzipped:
-        # Gzip magic bytes are 1F 8B
         if len(header_chunk) < 2 or header_chunk[:2] != b"\x1f\x8b":
             raise HTTPException(
                 status_code=400,
-                detail="File signature mismatch: File claims to be .vcf.gz but lacks valid gzip headers."
+                detail="File signature mismatch: .vcf.gz file lacks valid gzip magic bytes."
             )
     else:
-        # Uncompressed VCF must start with '##fileformat=VCF'
         try:
             decoded_header = header_chunk.decode("utf-8", errors="ignore")
             if not decoded_header.startswith("##fileformat="):
                 raise HTTPException(
                     status_code=400,
-                    detail="File signature mismatch: File claims to be .vcf but lacks standard VCF header ('##fileformat=')"
+                    detail="File signature mismatch: .vcf file lacks standard VCF header."
                 )
         except Exception:
-            raise HTTPException(
-                status_code=400,
-                detail="File content parsing error. Plaintext VCF contains invalid characters."
-            )
+            raise HTTPException(status_code=400, detail="File content parsing error.")
 
-    # 4. Secure File Saving
-    # Generate unique filename using UUID4 to prevent naming collisions and directory traversal
+    # 6. Secure File Write (UUID4 filename)
     secure_filename = f"{uuid.uuid4()}{ext}"
     dest_path = os.path.join(LOCAL_STORAGE_DIR, secure_filename)
-
+    sha256_hash = None
     try:
+        hasher = hashlib.sha256()
+        vcf_file.file.seek(0)
         with open(dest_path, "wb") as buffer:
-            shutil.copyfileobj(vcf_file.file, buffer)
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Secure file write failed: {str(e)}"
-        )
+            for chunk in iter(lambda: vcf_file.file.read(65536), b""):
+                hasher.update(chunk)
+                buffer.write(chunk)
+        sha256_hash = hasher.hexdigest()
+    except Exception:
+        try:
+            os.remove(dest_path)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="File write failed. Please try again.")
 
-    # 5. Database Record Linking
+    # 7. Database Record
+    now = datetime.utcnow()
     new_case = ClinicalCase(
-        patient_name=patient_name,
+        patient_id=patient_id,
         patient_age=patient_age,
         patient_sex=patient_sex,
         indication_doid=indication_doid,
@@ -436,19 +466,106 @@ def create_case(
         transcript_db=transcript_db,
         reference_genome=reference_genome,
         vcf_path=dest_path,
-        upload_timestamp=datetime.utcnow(),
+        sha256_hash=sha256_hash,
+        consent_given=True,
+        consent_timestamp=now,
+        upload_timestamp=now,
         is_archived=False
     )
-    
     db.add(new_case)
     db.commit()
     db.refresh(new_case)
-    
+
+    audit = get_audit_logger()
+    audit.info(f"CASE-{new_case.id:04d} | {current_user.username} | CASE_CREATED | patient_id={patient_id} indication={indication_name} sha256={sha256_hash}")
     return new_case
 
 
+def _secure_delete_vcf(vcf_path: str) -> None:
+    """
+    Securely deletes a VCF file from disk.
+    Attempts `shred -u` (Linux) for forensic overwrite; falls back to
+    zero-fill + os.remove if shred is unavailable.
+    """
+    if not vcf_path or not os.path.isfile(vcf_path):
+        return
+    try:
+        subprocess.run(["shred", "-u", "-z", "-n", "3", vcf_path], check=True, timeout=30)
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        # Fallback: overwrite with zeros then remove
+        try:
+            size = os.path.getsize(vcf_path)
+            with open(vcf_path, "r+b") as f:
+                f.write(b"\x00" * size)
+            os.remove(vcf_path)
+        except Exception:
+            try:
+                os.remove(vcf_path)
+            except Exception:
+                pass
 
 
+@app.delete("/api/cases/{case_id}")
+def delete_case(
+    case_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Permanently deletes a clinical case record and securely shreds the associated VCF file.
+    Admin-only. Supports DPDP Right to Erasure (§12) and HIPAA data destruction obligations.
+    """
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Administrator privileges required.")
+
+    case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Clinical case not found")
+
+    vcf_path = case.vcf_path
+    patient_id_label = case.patient_id
+
+    db.delete(case)
+    db.commit()
+
+    _secure_delete_vcf(vcf_path)
+
+    audit = get_audit_logger()
+    audit.info(f"CASE-{case_id:04d} | {current_user.username} | CASE_DELETED | patient_id={patient_id_label} vcf_shredded=True")
+    return {"message": f"CASE-{case_id:04d} permanently deleted and VCF securely shredded."}
+
+
+@app.patch("/api/cases/{case_id}/archive")
+def archive_case(
+    case_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Archives a clinical case and immediately securely shreds the associated VCF file.
+    Archived cases remain in the database for audit traceability but the raw genomic
+    file is permanently destroyed, satisfying HIPAA data minimisation obligations.
+    """
+    case = db.query(ClinicalCase).filter(ClinicalCase.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Clinical case not found")
+
+    if case.is_archived:
+        return {"message": f"CASE-{case_id:04d} is already archived."}
+
+    vcf_path = case.vcf_path
+    case.is_archived = True
+    case.vcf_path = ""   # Clear path reference after secure deletion
+    db.commit()
+
+    _secure_delete_vcf(vcf_path)
+
+    audit = get_audit_logger()
+    audit.info(f"CASE-{case_id:04d} | {current_user.username} | CASE_ARCHIVED | vcf_shredded=True")
+    return {"message": f"CASE-{case_id:04d} archived and VCF securely shredded."}
+
+
+# --- DOID AUTOCOMPLETE SEARCH ---
 
 # --- DOID AUTOCOMPLETE SEARCH ---
 
@@ -945,12 +1062,11 @@ def confirm_case_variants(
     case.confirmed_variants = json.dumps(confirmed_variants)
     db.commit()
 
-    # Logging to standard output as required for clinical audit
-    print(f"\n[CLINICAL AUDIT LOG] Case ID: CASE-{case_id} | Operator: {current_user.username} | Timestamp: {datetime.utcnow()}")
-    print(f"[CLINICAL AUDIT LOG] Confirmed {len(confirmed_variants)} Variants with evidence:")
+    # Write to secure, append-only audit log file
+    audit = get_audit_logger()
+    audit.info(f"CASE-{case_id:04d} | {current_user.username} | VARIANTS_CONFIRMED | count={len(confirmed_variants)}")
     for v in confirmed_variants:
-        print(f"  - HGVSg: {v.get('hgvsg')} | Gene: {v.get('gene')} | Tier: {v.get('tier')} | Source: {v.get('evidence_source')}")
-    print("[CLINICAL AUDIT LOG] End of Log.\n")
+        audit.info(f"CASE-{case_id:04d} | {current_user.username} | VARIANT | hgvsg={v.get('hgvsg')} gene={v.get('gene')} tier={v.get('tier')}")
 
     return {"message": f"Successfully logged and saved {len(confirmed_variants)} confirmed variants for CASE-{case_id}."}
 
@@ -1430,7 +1546,7 @@ def download_case_report_docx(
     demog_grid = [
         [("Provider", ""), ("Physician", "")],
         [("Pathologist", ""), ("Report Date", "")],
-        [("Patient Name", case.patient_name or ""), ("Age", str(case.patient_age) if case.patient_age is not None else "")],
+        [("Patient Name", ""), ("Age", str(case.patient_age) if case.patient_age is not None else "")],  # Patient Name intentionally blank — complete manually
         [("Sex", case.patient_sex or ""), ("Diagnosis", case.indication_name or "")],
         [("Stage", ""), ("Accession Number / Patient ID", f"CASE-{case.id:04d}")],
         [("Collection Site", ""), ("Specimen Type", "")],

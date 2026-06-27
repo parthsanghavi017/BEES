@@ -15,8 +15,17 @@ References/
 Var_DB/
 *.jar
 
-# Environments
+# Gene descriptions (ingested into SQLCipher DB via migrate_gene_descriptions.py)
+Gene_Desc/
+
+# Test / sample VCF files (internal only)
+Test/
+
+# Environment secrets — never commit actual credentials
 .env
+*.env.local
+
+# Environments
 .venv
 env/
 venv/
