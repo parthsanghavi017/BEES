@@ -51,7 +51,7 @@ BEES_v2/
 │   ├── bees_ensembl_hg38.ser   ← Ensembl transcript annotation database (GRCh38)
 │   ├── bees_refseq_hg38.ser    ← RefSeq transcript annotation database (GRCh38)
 │   ├── Driver-Genes.tsv        ← Cancer driver gene panel
-│   └── af-only-gnomad.hg38.vcf.gz  ← gnomAD population AF reference
+│   └── af-only-gnomad.hg38.vcf.gz  ← gnomAD population AF reference, this can be downlaoded from https://www.bcgsc.ca/downloads/morinlab/reference/af-only-gnomad.hg38.vcf.gz (Get the .tbi as well)
 ├── Var_DB/
 │   └── clinical_evidence.db    ← AES-256 encrypted curated oncology evidence
 ├── bees-annotator.jar          ← Bundled variant annotation engine (Java)
@@ -190,4 +190,4 @@ This project is released for research and educational use. For clinical deployme
 
 ## Contributing
 
-Pull requests are welcome. Please open an issue first to discuss significant changes. All contributions must maintain the sovereign, privacy-first design principles of this project.
+Pull requests are welcome. Please open an issue first to discuss significant changes. All contributions must maintain the privacy-first design principles of this project.
