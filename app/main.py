@@ -157,6 +157,26 @@ def on_startup():
     except Exception as e:
         print(f"Warning: Failed to preload cache: {e}")
 
+    print("")
+    print("=" * 60)
+    print("  ██████╗ ███████╗███████╗███████╗")
+    print("  ██╔══██╗██╔════╝██╔════╝██╔════╝")
+    print("  ██████╔╝█████╗  █████╗  ███████╗")
+    print("  ██╔══██╗██╔══╝  ██╔══╝  ╚════██║")
+    print("  ██████╔╝███████╗███████╗███████║")
+    print("  ╚═════╝ ╚══════╝╚══════╝╚══════╝")
+    print("")
+    print("  BEES — Bioinformatics Evidence Evaluation System")
+    print("  Version: 2.0 | Sovereign Clinical Genomics Pipeline")
+    print("=" * 60)
+    print("  ✓  Database schema initialized")
+    print("  ✓  Driver genes loaded")
+    print("  ✓  CIViC cache preloaded")
+    print("  ✓  Server ready at http://127.0.0.1:8000")
+    print("  ✓  API docs at   http://127.0.0.1:8000/docs")
+    print("=" * 60)
+    print("")
+
 # --- AUTHENTICATION ENDPOINTS ---
 
 @app.post("/api/auth/login")
