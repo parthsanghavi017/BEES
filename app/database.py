@@ -80,6 +80,18 @@ class LocalEvidence(EvidenceBase):
     level = Column(String, nullable=False)
     pmids = Column(String, nullable=True)
 
+class LocalGeneDescription(EvidenceBase):
+    """
+    LocalGeneDescription model representing curated gene clinical descriptions.
+    Encrypted at rest using SQLCipher and SQLAlchemy.
+    """
+    __tablename__ = "local_gene_description"
+
+    id = Column(Integer, primary_key=True, index=True)
+    gene = Column(String, index=True, unique=True, nullable=False)
+    clinical_desc = Column(String, nullable=False)
+    references = Column(String, nullable=True)
+
 EVIDENCE_PASSPHRASE = os.getenv("SQLCIPHER_PASSPHRASE", "bees_secure_evidence_cipher_key_2026")
 db_dir = os.path.dirname(os.path.abspath(__file__))
 evidence_db_path = os.path.join(os.path.dirname(db_dir), "Var_DB", "clinical_evidence.db")

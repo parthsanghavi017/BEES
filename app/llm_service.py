@@ -25,32 +25,22 @@ def format_protein_change(protein: str, consequence: str = "") -> str:
 
 
 def parse_local_gene_description(gene_name: str) -> str:
-    import os
     import re
-    app_dir = os.path.dirname(os.path.abspath(__file__))
-    gene_desc_dir = os.path.join(os.path.dirname(app_dir), "Gene_Desc")
-    file_path = os.path.join(gene_desc_dir, f"{gene_name.upper().strip()}.txt")
-    if not os.path.exists(file_path):
-        return ""
+    from app.database import EvidenceSessionLocal, LocalGeneDescription
+    
+    session = EvidenceSessionLocal()
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        significance_pattern = re.compile(
-            r"##\s*Clinical\s+Significance\s*\n(.*?)(?=\n##|$)", 
-            re.IGNORECASE | re.DOTALL
-        )
-        significance_match = significance_pattern.search(content)
-        if not significance_match:
+        record = session.query(LocalGeneDescription).filter(
+            LocalGeneDescription.gene == gene_name.upper().strip()
+        ).first()
+        if not record:
             return ""
-        significance_text = significance_match.group(1).strip()
-        references_pattern = re.compile(
-            r"##\s*References\s*\n(.*)", 
-            re.IGNORECASE | re.DOTALL
-        )
-        references_match = references_pattern.search(content)
+            
+        significance_text = record.clinical_desc.strip()
+        references_text = record.references.strip() if record.references else ""
+        
         appropriate_references = []
-        if references_match:
-            references_text = references_match.group(1).strip()
+        if references_text:
             ref_lines = [line.strip() for line in references_text.split("\n") if line.strip()]
             for line in ref_lines:
                 key_match = re.search(r"\(([^)]+)\)", line)
@@ -58,6 +48,7 @@ def parse_local_gene_description(gene_name: str) -> str:
                     ref_key = key_match.group(1)
                     if ref_key in significance_text:
                         appropriate_references.append(line)
+                        
         renumbered_references = []
         for idx, ref in enumerate(appropriate_references, 1):
             ref_cleaned = ref
@@ -68,13 +59,16 @@ def parse_local_gene_description(gene_name: str) -> str:
             elif nobracket_match:
                 ref_cleaned = re.sub(r"^\d+\.\s+", f"{idx}. ", ref)
             renumbered_references.append(ref_cleaned)
-        output = f"## Clinical Significance\n{significance_text}"
+            
+        output = significance_text
         if renumbered_references:
             output += "\n\n## References\n" + "\n\n".join(renumbered_references)
         return output
     except Exception as e:
-        logger.error(f"Error parsing local gene description for {gene_name}: {e}")
+        logger.error(f"Error retrieving local gene description for {gene_name}: {e}")
         return ""
+    finally:
+        session.close()
 
 
 class LlmSynthesisService:

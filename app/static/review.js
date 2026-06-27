@@ -156,7 +156,23 @@ async function loadReviewData() {
             try {
                 const confirmed = JSON.parse(caseData.confirmed_variants);
                 confirmed.forEach(cv => {
-                    selectedSet.add(cv.hgvsg);
+                    const orig = variantsData.find(v => v.hgvsg === cv.hgvsg);
+                    if (orig && orig.evidence_json && orig.evidence_json.length > 0) {
+                        cv.evidence_json.forEach(cvEv => {
+                            const idx = orig.evidence_json.findIndex(origEv => {
+                                const origDrug = (origEv.drug || "None").trim().toLowerCase();
+                                const cvDrug = (cvEv.drug || "None").trim().toLowerCase();
+                                const origBt = (origEv.biomarker_type || "None").trim().toLowerCase();
+                                const cvBt = (cvEv.biomarker_type || "None").trim().toLowerCase();
+                                return origDrug === cvDrug && origBt === cvBt;
+                            });
+                            if (idx !== -1) {
+                                selectedSet.add(`${cv.hgvsg}::${idx}`);
+                            }
+                        });
+                    } else {
+                        selectedSet.add(cv.hgvsg);
+                    }
                 });
                 applyFilters(); // Re-render to check correct rows
                 updateProceedButton();
@@ -214,6 +230,18 @@ function renderFunnel() {
     }
 }
 
+function isVariantSelected(v) {
+    if (selectedSet.has(v.hgvsg)) {
+        return true;
+    }
+    for (const key of selectedSet) {
+        if (key.startsWith(v.hgvsg + "::")) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function renderVariantsTable(customData) {
     const tableBody = document.getElementById("variants-table-body");
     tableBody.innerHTML = "";
@@ -231,7 +259,7 @@ function renderVariantsTable(customData) {
     data.forEach((v) => {
         const tr = document.createElement("tr");
         
-        const isChecked = selectedSet.has(v.hgvsg) ? "checked" : "";
+        const isChecked = isVariantSelected(v) ? "checked" : "";
         const afStr = v.gnomad_af === 0 ? "Novel (0.0000)" : v.gnomad_af.toFixed(5);
         const impactClass = v.impact && v.impact.toLowerCase() === "high" ? "impact-high" : "impact-moderate";
         const consequenceText = v.consequence ? formatConsequence(v.consequence) : (v.impact || "Unknown");
@@ -286,10 +314,22 @@ function renderVariantsTable(customData) {
     checkBoxes.forEach(cb => {
         cb.addEventListener("change", (e) => {
             const hgvsg = e.target.getAttribute("data-hgvsg");
+            const v = variantsData.find(vd => vd.hgvsg === hgvsg);
             if (e.target.checked) {
-                selectedSet.add(hgvsg);
+                if (v && v.evidence_json && v.evidence_json.length > 0) {
+                    v.evidence_json.forEach((ev, idx) => {
+                        selectedSet.add(`${hgvsg}::${idx}`);
+                    });
+                } else {
+                    selectedSet.add(hgvsg);
+                }
             } else {
                 selectedSet.delete(hgvsg);
+                Array.from(selectedSet).forEach(item => {
+                    if (item.startsWith(hgvsg + "::")) {
+                        selectedSet.delete(item);
+                    }
+                });
             }
             
             // Keep "Select All" checkbox state in sync
@@ -491,10 +531,22 @@ function setupListeners() {
         checkBoxes.forEach(cb => {
             cb.checked = e.target.checked;
             const hgvsg = cb.getAttribute("data-hgvsg");
+            const v = variantsData.find(vd => vd.hgvsg === hgvsg);
             if (e.target.checked) {
-                selectedSet.add(hgvsg);
+                if (v && v.evidence_json && v.evidence_json.length > 0) {
+                    v.evidence_json.forEach((ev, idx) => {
+                        selectedSet.add(`${hgvsg}::${idx}`);
+                    });
+                } else {
+                    selectedSet.add(hgvsg);
+                }
             } else {
                 selectedSet.delete(hgvsg);
+                Array.from(selectedSet).forEach(item => {
+                    if (item.startsWith(hgvsg + "::")) {
+                        selectedSet.delete(item);
+                    }
+                });
             }
         });
         updateProceedButton();
@@ -734,121 +786,138 @@ function populateReportInfo() {
     tier1Body.innerHTML = "";
     tier2Body.innerHTML = "";
     
-    // Filter variantsData based on selectedSet
-    const confirmed = variantsData.filter(v => selectedSet.has(v.hgvsg));
-    
-    const tier1Variants = confirmed.filter(v => v.tier && v.tier.toLowerCase().includes("1"));
-    const tier2Variants = confirmed.filter(v => v.tier && v.tier.toLowerCase().includes("2"));
-    const vusVariants = confirmed.filter(v => v.tier && v.tier.toLowerCase().includes("3"));
-    
+    const vusContainer = document.getElementById("report-vus-container");
+    const vusBody = document.getElementById("report-variants-vus-body");
+    if (vusBody) vusBody.innerHTML = "";
+
     const cols = 11;
     
-    const createExplodedRows = (v, targetBody) => {
+    // Build flat list of all selected evidence items / rows
+    const selectedRows = [];
+    variantsData.forEach(v => {
         const evidenceList = v.evidence_json || [];
-        
+        if (evidenceList.length === 0) {
+            if (selectedSet.has(v.hgvsg)) {
+                selectedRows.push({
+                    variant: v,
+                    evidence: null,
+                    key: v.hgvsg,
+                    tier: v.tier || "Tier 3",
+                    level: v.level || "Level VUS"
+                });
+            }
+        } else {
+            evidenceList.forEach((ev, idx) => {
+                const key = `${v.hgvsg}::${idx}`;
+                if (selectedSet.has(key)) {
+                    selectedRows.push({
+                        variant: v,
+                        evidence: ev,
+                        key: key,
+                        tier: ev.tier || "Tier 3",
+                        level: ev.level || "Level VUS"
+                    });
+                }
+            });
+        }
+    });
+
+    const getRowHtml = (row) => {
+        const v = row.variant;
+        const ev = row.evidence;
         const gene = v.gene || "";
         const cdna = v.cdna || "";
-        
         const isSplice = v.consequence && v.consequence.toLowerCase().includes("splice");
         const protein = isSplice ? "" : formatProteinChange(v.protein, true);
         const hgvsg = v.hgvsg || "";
         const consequence = v.consequence ? formatConsequence(v.consequence) : "Unknown";
         
-        const getRowHtml = (ev) => {
-            let level = "VUS";
-            let biomarkerType = "None";
-            let drug = "None";
-            let response = "None";
-            let evidenceStr = "None";
-            
-            if (ev) {
-                level = ev.level ? ev.level.replace(/level\s*/i, "").trim() : "VUS";
-                biomarkerType = ev.biomarker_type ? ev.biomarker_type.trim() : "None";
-                
-                // Therapeutic mapping
-                const tf = formatTherapeuticResponse(biomarkerType, ev.drug, ev.response);
-                drug = tf.drug;
-                response = tf.response;
-                
-                // QC EID and PMID
-                let parts = [];
-                if (ev.source === "CIViC" && ev.eid) {
-                    parts.push(ev.eid);
-                }
-                if (ev.pmids && ev.pmids !== "None") {
-                    parts.push(ev.pmids);
-                }
-                evidenceStr = parts.length > 0 ? parts.join(" (") + (parts.length > 1 ? ")" : "") : "None";
-            } else {
-                level = v.level ? v.level.split(" | ")[0].replace(/level\s*/i, "").trim() : "VUS";
-                biomarkerType = v.biomarker_type ? v.biomarker_type.split(" | ")[0].trim() : "None";
-                
-                const tf = formatTherapeuticResponse(biomarkerType, v.drug ? v.drug.split(" | ")[0] : "None", v.response ? v.response.split(" | ")[0] : "None");
-                drug = tf.drug;
-                response = tf.response;
-                
-                evidenceStr = v.evidence ? v.evidence.split(" | ")[0] : "None";
-            }
-            
-            const levelClean = level.toUpperCase() === "VUS" ? "vus" : level.toLowerCase().replace(/\s+/g, '');
-            const levelBadge = `<span class="level-badge level-${levelClean}">${escapeHtml(level)}</span>`;
-            const biomarkerClean = biomarkerType.charAt(0).toUpperCase() + biomarkerType.slice(1).toLowerCase();
-            
-            return `
-                <td><strong>${escapeHtml(gene)}</strong></td>
-                <td><span style="font-family: monospace;">${escapeHtml(cdna)}</span></td>
-                <td><span style="font-family: monospace;">${escapeHtml(protein)}</span></td>
-                <td><span style="font-family: monospace;" class="transcript-ref">${escapeHtml(hgvsg)}</span></td>
-                <td>${escapeHtml(consequence)}</td>
-                <td>${levelBadge}</td>
-                <td>${escapeHtml(biomarkerClean)}</td>
-                <td>${escapeHtml(drug)}</td>
-                <td>${escapeHtml(response)}</td>
-                <td>${escapeHtml(evidenceStr)}</td>
-                <td style="text-align: center;">
-                    <button type="button" class="btn btn-danger btn-xs btn-drop-variant" data-hgvsg="${hgvsg}" style="background:#ef4444; border:none; color:#fff; padding:4px 8px; border-radius:4px; font-size:0.75rem; cursor:pointer;">Drop</button>
-                </td>
-            `;
-        };
+        let level = "VUS";
+        let biomarkerType = "None";
+        let drug = "None";
+        let response = "None";
+        let evidenceStr = "None";
         
-        if (evidenceList.length === 0) {
-            const tr = document.createElement("tr");
-            tr.innerHTML = getRowHtml(null);
-            targetBody.appendChild(tr);
+        if (ev) {
+            level = ev.level ? ev.level.replace(/level\s*/i, "").trim() : "VUS";
+            biomarkerType = ev.biomarker_type ? ev.biomarker_type.trim() : "None";
+            
+            // Therapeutic mapping
+            const tf = formatTherapeuticResponse(biomarkerType, ev.drug, ev.response);
+            drug = tf.drug;
+            response = tf.response;
+            
+            // QC EID and PMID
+            let parts = [];
+            if (ev.source && ev.source.includes("CIViC") && ev.eid) {
+                parts.push(ev.eid);
+            }
+            if (ev.pmids && ev.pmids !== "None") {
+                parts.push(ev.pmids);
+            }
+            evidenceStr = parts.length > 0 ? parts.join(" (") + (parts.length > 1 ? ")" : "") : "None";
         } else {
-            evidenceList.forEach(ev => {
-                const tr = document.createElement("tr");
-                tr.innerHTML = getRowHtml(ev);
-                targetBody.appendChild(tr);
-            });
+            level = v.level ? v.level.split(" | ")[0].replace(/level\s*/i, "").trim() : "VUS";
+            biomarkerType = v.biomarker_type ? v.biomarker_type.split(" | ")[0].trim() : "None";
+            
+            const tf = formatTherapeuticResponse(biomarkerType, v.drug ? v.drug.split(" | ")[0] : "None", v.response ? v.response.split(" | ")[0] : "None");
+            drug = tf.drug;
+            response = tf.response;
+            
+            evidenceStr = v.evidence ? v.evidence.split(" | ")[0] : "None";
         }
+        
+        const levelClean = level.toUpperCase() === "VUS" ? "vus" : level.toLowerCase().replace(/\s+/g, '');
+        const levelBadge = `<span class="level-badge level-${levelClean}">${escapeHtml(level)}</span>`;
+        const biomarkerClean = biomarkerType.charAt(0).toUpperCase() + biomarkerType.slice(1).toLowerCase();
+        
+        return `
+            <td><strong>${escapeHtml(gene)}</strong></td>
+            <td><span style="font-family: monospace;">${escapeHtml(cdna)}</span></td>
+            <td><span style="font-family: monospace;">${escapeHtml(protein)}</span></td>
+            <td><span style="font-family: monospace;" class="transcript-ref">${escapeHtml(hgvsg)}</span></td>
+            <td>${escapeHtml(consequence)}</td>
+            <td>${levelBadge}</td>
+            <td>${escapeHtml(biomarkerClean)}</td>
+            <td>${escapeHtml(drug)}</td>
+            <td>${escapeHtml(response)}</td>
+            <td>${escapeHtml(evidenceStr)}</td>
+            <td style="text-align: center;">
+                <button type="button" class="btn btn-danger btn-xs btn-drop-variant" data-key="${row.key}" style="background:#ef4444; border:none; color:#fff; padding:4px 8px; border-radius:4px; font-size:0.75rem; cursor:pointer;">Drop</button>
+            </td>
+        `;
     };
-    
-    if (tier1Variants.length === 0) {
+
+    const tier1Rows = selectedRows.filter(r => r.tier.toLowerCase().includes("1"));
+    const tier2Rows = selectedRows.filter(r => r.tier.toLowerCase().includes("2"));
+    const vusRows = selectedRows.filter(r => r.tier.toLowerCase().includes("3"));
+
+    if (tier1Rows.length === 0) {
         tier1Body.innerHTML = `<tr><td colspan="${cols}" class="table-placeholder">No Tier 1 variants selected.</td></tr>`;
     } else {
-        tier1Variants.forEach(v => {
-            createExplodedRows(v, tier1Body);
+        tier1Rows.forEach(row => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = getRowHtml(row);
+            tier1Body.appendChild(tr);
         });
     }
     
-    if (tier2Variants.length === 0) {
+    if (tier2Rows.length === 0) {
         tier2Body.innerHTML = `<tr><td colspan="${cols}" class="table-placeholder">No Tier 2 variants selected.</td></tr>`;
     } else {
-        tier2Variants.forEach(v => {
-            createExplodedRows(v, tier2Body);
+        tier2Rows.forEach(row => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = getRowHtml(row);
+            tier2Body.appendChild(tr);
         });
     }
 
-    // 4. VUS Section preview
-    const vusContainer = document.getElementById("report-vus-container");
-    const vusBody = document.getElementById("report-variants-vus-body");
     if (vusContainer && vusBody) {
-        vusBody.innerHTML = "";
-        if (vusVariants.length > 0) {
+        if (vusRows.length > 0) {
             vusContainer.classList.remove("hidden");
-            vusVariants.forEach(v => {
+            vusRows.forEach(row => {
                 const tr = document.createElement("tr");
+                const v = row.variant;
                 const isSplice = v.consequence && v.consequence.toLowerCase().includes("splice");
                 const p_notation = isSplice ? "" : formatProteinChange(v.protein, true);
                 const variant_str = `${v.cdna || ""} ${p_notation}`.trim();
@@ -861,7 +930,7 @@ function populateReportInfo() {
                     <td>${escapeHtml(consequence_clean)}</td>
                     <td><span style="font-family: monospace;">${af_pct}</span></td>
                     <td style="text-align: center;">
-                        <button type="button" class="btn btn-danger btn-xs btn-drop-variant" data-hgvsg="${v.hgvsg}" style="background:#ef4444; border:none; color:#fff; padding:4px 8px; border-radius:4px; font-size:0.75rem; cursor:pointer;">Drop</button>
+                        <button type="button" class="btn btn-danger btn-xs btn-drop-variant" data-key="${row.key}" style="background:#ef4444; border:none; color:#fff; padding:4px 8px; border-radius:4px; font-size:0.75rem; cursor:pointer;">Drop</button>
                     </td>
                 `;
                 vusBody.appendChild(tr);
@@ -1005,9 +1074,9 @@ function setupReportListeners() {
             reportWorkspace.dataset.hasDropListener = "true";
             reportWorkspace.addEventListener("click", async (e) => {
                 if (e.target.classList.contains("btn-drop-variant")) {
-                    const hgvsg = e.target.getAttribute("data-hgvsg");
-                    if (confirm(`Are you sure you want to drop variant ${hgvsg} from the report?`)) {
-                        selectedSet.delete(hgvsg);
+                    const key = e.target.getAttribute("data-key");
+                    if (confirm(`Are you sure you want to drop this item from the report?`)) {
+                        selectedSet.delete(key);
                         e.target.disabled = true;
                         e.target.textContent = "Dropping...";
                         
@@ -1111,7 +1180,7 @@ function applyFilters() {
 
     filteredVariantsList = variantsData.filter(v => {
         // Selected variants bypass all filtration to remain visible and checkable
-        if (selectedSet.has(v.hgvsg)) {
+        if (isVariantSelected(v)) {
             return true;
         }
 

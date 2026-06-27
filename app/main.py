@@ -44,6 +44,20 @@ DRIVER_GENES_MAP = {}
 DRIVER_GENES_COUNT = {}
 INDICATION_LIST = []
 
+def standardize_biomarker_type(bt: Optional[str]) -> str:
+    if not bt:
+        return "None"
+    bt_clean = bt.strip().lower()
+    if bt_clean in ("prognostic", "progonstic"):
+        return "prognostic"
+    if "predictive" in bt_clean or bt_clean.startswith("predic"):
+        return "predictive"
+    if bt_clean == "diagnostic":
+        return "diagnostic"
+    if bt_clean == "therapeutic":
+        return "therapeutic"
+    return bt.strip()
+
 def load_driver_genes():
     global DRIVER_GENES_MAP, DRIVER_GENES_COUNT, INDICATION_LIST
     tsv_path = os.path.join(os.path.dirname(BASE_DIR), "References", "Driver-Genes.tsv")
@@ -470,8 +484,128 @@ def tier_case_variants(case, db):
         return []
     variants = json.loads(case.filtered_variants)
     
-    # Fast path: if variants are already decorated/tiered, return immediately
+    def deduplicate_evidence_list(evidence_json):
+        if not evidence_json:
+            return []
+        grouped = {}
+        for m in evidence_json:
+            bt_val = m.get("biomarker_type", "None") or "None"
+            bt_val = standardize_biomarker_type(bt_val)
+            m["biomarker_type"] = bt_val
+            drug_val = m.get("drug", "None") or "None"
+            key = (bt_val.strip().lower(), drug_val.strip().lower())
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append(m)
+            
+        unique_matches = []
+        for key, group_records in grouped.items():
+            def get_record_sort_key(rec):
+                t_scores = {"Tier 1": 1, "Tier 2": 2, "Tier 3": 3}
+                l_scores = {"Level A": 1, "Level B": 2, "Level C": 3, "Level D": 4, "Level VUS": 5}
+                t_score = t_scores.get(rec.get("tier"), 9)
+                l_score = l_scores.get(rec.get("level"), 9)
+                return (t_score, l_score)
+                
+            group_records.sort(key=get_record_sort_key)
+            rep = dict(group_records[0])
+            
+            # Combine PMIDs
+            all_pmids = []
+            for r in group_records:
+                p_val = r.get("pmids")
+                if p_val and p_val != "None" and p_val != "OncoKB":
+                    import re
+                    for p in re.split(r'[,;]', p_val):
+                        p = p.strip()
+                        if p and p not in all_pmids:
+                            all_pmids.append(p)
+            if all_pmids:
+                rep["pmids"] = ";".join(all_pmids)
+            else:
+                has_oncokb = any(r.get("pmids") == "OncoKB" for r in group_records)
+                rep["pmids"] = "OncoKB" if has_oncokb else "None"
+                
+            # Combine EIDs
+            all_eids = []
+            for r in group_records:
+                eid_val = r.get("eid")
+                if eid_val and eid_val != "None" and eid_val != "":
+                    for e in re.split(r'[,;]', eid_val):
+                        e = e.strip()
+                        if e and e not in all_eids:
+                            all_eids.append(e)
+            if all_eids:
+                rep["eid"] = ";".join(all_eids)
+            else:
+                rep["eid"] = ""
+                
+            # Combine Sources
+            all_sources = []
+            for r in group_records:
+                src_val = r.get("source")
+                if src_val and src_val not in all_sources:
+                    all_sources.append(src_val)
+            if all_sources:
+                rep["source"] = ";".join(all_sources)
+                
+            unique_matches.append(rep)
+            
+        def get_record_sort_key_final(m):
+            t_scores = {"Tier 1": 1, "Tier 2": 2, "Tier 3": 3}
+            l_scores = {"Level A": 1, "Level B": 2, "Level C": 3, "Level D": 4, "Level VUS": 5}
+            t_score = t_scores.get(m.get("tier"), 9)
+            l_score = l_scores.get(m.get("level"), 9)
+            return (t_score, l_score)
+            
+        unique_matches.sort(key=get_record_sort_key_final)
+        return unique_matches
+
+    # Fast path: if variants are already decorated/tiered, return immediately (after applying deduplication)
     if variants and isinstance(variants[0], dict) and "tier" in variants[0]:
+        has_changed = False
+        for v in variants:
+            if "evidence_json" in v:
+                orig_len = len(v["evidence_json"])
+                v["evidence_json"] = deduplicate_evidence_list(v["evidence_json"])
+                if len(v["evidence_json"]) != orig_len:
+                    has_changed = True
+                
+                # Rebuild top-level columns to keep in sync
+                if v["evidence_json"]:
+                    tiers = [m["tier"] if m["tier"] else "Tier 3" for m in v["evidence_json"]]
+                    levels = [m["level"] if m["level"] else "Level VUS" for m in v["evidence_json"]]
+                    bts = [m["biomarker_type"].capitalize() if m["biomarker_type"] else "None" for m in v["evidence_json"]]
+                    pmids = [m["pmids"] if m["pmids"] else "OncoKB" for m in v["evidence_json"]]
+                    drugs = [m["drug"] if m["drug"] else "None" for m in v["evidence_json"]]
+                    responses = [m["response"].replace("_", " ").title() if m["response"] else "None" for m in v["evidence_json"]]
+                    sources = [m["source"] if m["source"] else "None" for m in v["evidence_json"]]
+                    
+                    v["tier"] = " | ".join(tiers)
+                    v["level"] = " | ".join(levels)
+                    v["biomarker_type"] = " | ".join(bts)
+                    v["evidence"] = " | ".join(pmids)
+                    v["drug"] = " | ".join(drugs)
+                    v["response"] = " | ".join(responses)
+                    v["evidence_source"] = " | ".join(sources)
+                else:
+                    is_candidate = (v.get("impact") in ("HIGH", "MODERATE") and v.get("gnomad_af", 0.0) <= 0.01)
+                    if is_candidate:
+                        v["tier"] = "Tier 3"
+                        v["level"] = "Level VUS"
+                    else:
+                        v["tier"] = "Tier 4"
+                        v["level"] = "None"
+                    v["biomarker_type"] = "None"
+                    v["evidence"] = "None"
+                    v["drug"] = "None"
+                    v["response"] = "None"
+                    v["evidence_source"] = "None"
+                    v["evidence_json"] = []
+                    
+        if has_changed:
+            case.filtered_variants = json.dumps(variants)
+            db.commit()
         return variants
     
     from app.database import EvidenceSessionLocal, LocalEvidence
@@ -578,20 +712,72 @@ def tier_case_variants(case, db):
             
         combined_matches = civic_adjusted + local_adjusted
             
-        seen = set()
-        unique_matches = []
+        # Deduplicate and group by Biomarker Type and Drug
+        grouped = {}
         for m in combined_matches:
-            t_val = m["tier"].strip() if m["tier"] else "Tier 3"
-            l_val = m["level"].strip() if m["level"] else "Level VUS"
-            bt_val = m["biomarker_type"].strip().lower() if m["biomarker_type"] else "none"
-            pmid_val = m["pmids"].strip() if m["pmids"] else "none"
-            drug_val = m["drug"].strip().lower() if m["drug"] else "none"
-            resp_val = m["response"].strip().lower() if m["response"] else "none"
+            bt_val = m.get("biomarker_type", "None") or "None"
+            bt_val = standardize_biomarker_type(bt_val)
+            m["biomarker_type"] = bt_val
+            drug_val = m.get("drug", "None") or "None"
             
-            key = (t_val, l_val, bt_val, pmid_val, drug_val, resp_val)
-            if key not in seen:
-                seen.add(key)
-                unique_matches.append(m)
+            key = (bt_val.strip().lower(), drug_val.strip().lower())
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append(m)
+            
+        unique_matches = []
+        for key, group_records in grouped.items():
+            # Find representative with highest level/tier
+            def get_record_sort_key(rec):
+                t_scores = {"Tier 1": 1, "Tier 2": 2, "Tier 3": 3}
+                l_scores = {"Level A": 1, "Level B": 2, "Level C": 3, "Level D": 4, "Level VUS": 5}
+                t_score = t_scores.get(rec.get("tier"), 9)
+                l_score = l_scores.get(rec.get("level"), 9)
+                return (t_score, l_score)
+                
+            group_records.sort(key=get_record_sort_key)
+            rep = dict(group_records[0]) # Copy so we don't mutate original
+            
+            # Combine PMIDs
+            all_pmids = []
+            for r in group_records:
+                p_val = r.get("pmids")
+                if p_val and p_val != "None" and p_val != "OncoKB":
+                    import re
+                    for p in re.split(r'[,;]', p_val):
+                        p = p.strip()
+                        if p and p not in all_pmids:
+                            all_pmids.append(p)
+            if all_pmids:
+                rep["pmids"] = ";".join(all_pmids)
+            else:
+                has_oncokb = any(r.get("pmids") == "OncoKB" for r in group_records)
+                rep["pmids"] = "OncoKB" if has_oncokb else "None"
+                
+            # Combine EIDs
+            all_eids = []
+            for r in group_records:
+                eid_val = r.get("eid")
+                if eid_val and eid_val != "None" and eid_val != "":
+                    for e in re.split(r'[,;]', eid_val):
+                        e = e.strip()
+                        if e and e not in all_eids:
+                            all_eids.append(e)
+            if all_eids:
+                rep["eid"] = ";".join(all_eids)
+            else:
+                rep["eid"] = ""
+            
+            # Combine Sources
+            all_sources = []
+            for r in group_records:
+                src_val = r.get("source")
+                if src_val and src_val not in all_sources:
+                    all_sources.append(src_val)
+            if all_sources:
+                rep["source"] = ";".join(all_sources)
+                
+            unique_matches.append(rep)
                 
         has_tier1_or_2 = any(m["tier"] in ("Tier 1", "Tier 2") for m in unique_matches)
         if has_tier1_or_2:
@@ -679,8 +865,61 @@ def confirm_case_variants(
         raise HTTPException(status_code=404, detail="Clinical case not found")
 
     # Filter out selected variants from the cached filtered list
-    all_variants = json.loads(case.filtered_variants) if case.filtered_variants else []
-    confirmed_variants = [v for v in all_variants if v.get("hgvsg") in payload.selected_hgvsg]
+    all_variants = tier_case_variants(case, db)
+
+    confirmed_variants = []
+    for v in all_variants:
+        hgvsg = v.get("hgvsg")
+        if not hgvsg:
+            continue
+        
+        # Check if there are keys starting with hgvsg + "::" or exactly hgvsg
+        matching_keys = [k for k in payload.selected_hgvsg if k == hgvsg or k.startswith(f"{hgvsg}::")]
+        if not matching_keys:
+            continue
+            
+        evidence_list = v.get("evidence_json", [])
+        if not evidence_list:
+            # Variant has no evidence list, but was selected (e.g. VUS/Tier 3 with no evidence)
+            # Check if hgvsg is directly in selected_hgvsg
+            if hgvsg in payload.selected_hgvsg:
+                confirmed_variants.append(v)
+        else:
+            # Variant has evidence list, filter it based on selected keys
+            selected_indices = []
+            for k in matching_keys:
+                if "::" in k:
+                    try:
+                        idx = int(k.split("::")[1])
+                        selected_indices.append(idx)
+                    except ValueError:
+                        pass
+            
+            # Keep only the evidence items at selected indices
+            filtered_evidence = [evidence_list[i] for i in selected_indices if 0 <= i < len(evidence_list)]
+            if filtered_evidence:
+                # Copy the variant so we don't mutate all_variants in-place
+                v_copy = dict(v)
+                v_copy["evidence_json"] = filtered_evidence
+                
+                # Recompute tier, level, biomarker_type, evidence, drug, response, evidence_source
+                tiers = [m["tier"] if m["tier"] else "Tier 3" for m in filtered_evidence]
+                levels = [m["level"] if m["level"] else "Level VUS" for m in filtered_evidence]
+                bts = [m["biomarker_type"].capitalize() if m["biomarker_type"] else "None" for m in filtered_evidence]
+                pmids = [m["pmids"] if m["pmids"] else "OncoKB" for m in filtered_evidence]
+                drugs = [m["drug"] if m["drug"] else "None" for m in filtered_evidence]
+                responses = [m["response"].replace("_", " ").title() if m["response"] else "None" for m in filtered_evidence]
+                sources = [m["source"] if m["source"] else "None" for m in filtered_evidence]
+                
+                v_copy["tier"] = " | ".join(tiers)
+                v_copy["level"] = " | ".join(levels)
+                v_copy["biomarker_type"] = " | ".join(bts)
+                v_copy["evidence"] = " | ".join(pmids)
+                v_copy["drug"] = " | ".join(drugs)
+                v_copy["response"] = " | ".join(responses)
+                v_copy["evidence_source"] = " | ".join(sources)
+                
+                confirmed_variants.append(v_copy)
     
     # Save the selected variants
     case.confirmed_variants = json.dumps(confirmed_variants)
@@ -1023,6 +1262,106 @@ def download_case_report_docx(
         raise HTTPException(status_code=404, detail="Clinical case not found")
 
     confirmed_variants = json.loads(case.confirmed_variants) if case.confirmed_variants else []
+    
+    def deduplicate_evidence_json(evidence_json):
+        if not evidence_json:
+            return []
+        grouped = {}
+        for m in evidence_json:
+            bt_val = m.get("biomarker_type", "None") or "None"
+            bt_val = standardize_biomarker_type(bt_val)
+            m["biomarker_type"] = bt_val
+            drug_val = m.get("drug", "None") or "None"
+            key = (bt_val.strip().lower(), drug_val.strip().lower())
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append(m)
+            
+        unique_matches = []
+        for key, group_records in grouped.items():
+            def get_record_sort_key(rec):
+                t_scores = {"Tier 1": 1, "Tier 2": 2, "Tier 3": 3}
+                l_scores = {"Level A": 1, "Level B": 2, "Level C": 3, "Level D": 4, "Level VUS": 5}
+                t_score = t_scores.get(rec.get("tier"), 9)
+                l_score = l_scores.get(rec.get("level"), 9)
+                return (t_score, l_score)
+                
+            group_records.sort(key=get_record_sort_key)
+            rep = dict(group_records[0])
+            
+            # Combine PMIDs
+            all_pmids = []
+            for r in group_records:
+                p_val = r.get("pmids")
+                if p_val and p_val != "None" and p_val != "OncoKB":
+                    import re
+                    for p in re.split(r'[,;]', p_val):
+                        p = p.strip()
+                        if p and p not in all_pmids:
+                            all_pmids.append(p)
+            if all_pmids:
+                rep["pmids"] = ";".join(all_pmids)
+            else:
+                has_oncokb = any(r.get("pmids") == "OncoKB" for r in group_records)
+                rep["pmids"] = "OncoKB" if has_oncokb else "None"
+                
+            # Combine EIDs
+            all_eids = []
+            for r in group_records:
+                eid_val = r.get("eid")
+                if eid_val and eid_val != "None" and eid_val != "":
+                    for e in re.split(r'[,;]', eid_val):
+                        e = e.strip()
+                        if e and e not in all_eids:
+                            all_eids.append(e)
+            if all_eids:
+                rep["eid"] = ";".join(all_eids)
+            else:
+                rep["eid"] = ""
+                
+            # Combine Sources
+            all_sources = []
+            for r in group_records:
+                src_val = r.get("source")
+                if src_val and src_val not in all_sources:
+                    all_sources.append(src_val)
+            if all_sources:
+                rep["source"] = ";".join(all_sources)
+                
+            unique_matches.append(rep)
+            
+        def get_record_sort_key_final(m):
+            t_scores = {"Tier 1": 1, "Tier 2": 2, "Tier 3": 3}
+            l_scores = {"Level A": 1, "Level B": 2, "Level C": 3, "Level D": 4, "Level VUS": 5}
+            t_score = t_scores.get(m.get("tier"), 9)
+            l_score = l_scores.get(m.get("level"), 9)
+            return (t_score, l_score)
+            
+        unique_matches.sort(key=get_record_sort_key_final)
+        return unique_matches
+
+    # Apply deduplication dynamically to confirmed_variants
+    for v in confirmed_variants:
+        if "evidence_json" in v:
+            v["evidence_json"] = deduplicate_evidence_json(v["evidence_json"])
+            
+            # Recalculate variant fields to keep in sync
+            if v["evidence_json"]:
+                tiers = [m["tier"] if m["tier"] else "Tier 3" for m in v["evidence_json"]]
+                levels = [m["level"] if m["level"] else "Level VUS" for m in v["evidence_json"]]
+                bts = [m["biomarker_type"].capitalize() if m["biomarker_type"] else "None" for m in v["evidence_json"]]
+                pmids = [m["pmids"] if m["pmids"] else "OncoKB" for m in v["evidence_json"]]
+                drugs = [m["drug"] if m["drug"] else "None" for m in v["evidence_json"]]
+                responses = [m["response"].replace("_", " ").title() if m["response"] else "None" for m in v["evidence_json"]]
+                sources = [m["source"] if m["source"] else "None" for m in v["evidence_json"]]
+                
+                v["tier"] = " | ".join(tiers)
+                v["level"] = " | ".join(levels)
+                v["biomarker_type"] = " | ".join(bts)
+                v["evidence"] = " | ".join(pmids)
+                v["drug"] = " | ".join(drugs)
+                v["response"] = " | ".join(responses)
+                v["evidence_source"] = " | ".join(sources)
     report_draft_parsed = {}
     if case.report_draft:
         try:
@@ -1130,7 +1469,56 @@ def download_case_report_docx(
                 clean_response = response
         return clean_drug, clean_response
 
-    def add_variant_table(doc, section_title, variants_list):
+    def clean_variant_heading(header):
+        import re
+        header = re.sub(r'^###\s*', '', header).strip()
+        header = re.sub(r':$', '', header).strip()
+        match = re.search(r'Variant\s+\d+\s*\(([^)]+)\)', header, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        header = re.sub(r'^Variant\s+\d+\s*[:-]?\s*', '', header, flags=re.IGNORECASE)
+        return header.strip()
+
+    def find_matching_variant(header_text, confirmed_variants):
+        header_lower = header_text.lower()
+        best_match = None
+        best_score = 0
+        for v in confirmed_variants:
+            gene = v.get("gene", "").lower()
+            protein = v.get("protein", "").lower()
+            cdna = v.get("cdna", "").lower()
+            hgvsg = v.get("hgvsg", "").lower()
+            
+            if gene and gene in header_lower:
+                score = 1
+                if protein and format_protein_change(protein).lower() in header_lower:
+                    score += 3
+                if cdna and cdna in header_lower:
+                    score += 2
+                if hgvsg and hgvsg in header_lower:
+                    score += 4
+                
+                if score > best_score:
+                    best_score = score
+                    best_match = v
+        return best_match
+
+    def add_variant_table(doc, section_title, target_tier):
+        # We find all (variant, ev) pairs that belong to target_tier
+        rows_to_add = []
+        for v in confirmed_variants:
+            evidence_items = v.get("evidence_json", [])
+            if not evidence_items:
+                # If no evidence items, check variant's overall tier
+                v_tier = v.get("tier", "Tier 3")
+                if target_tier.lower() in v_tier.lower():
+                    rows_to_add.append((v, None))
+            else:
+                for ev in evidence_items:
+                    ev_tier = ev.get("tier", "Tier 3")
+                    if target_tier.lower() in ev_tier.lower():
+                        rows_to_add.append((v, ev))
+
         # Add subsection title
         p_sub = doc.add_paragraph()
         p_sub.paragraph_format.space_before = Pt(8)
@@ -1156,12 +1544,12 @@ def download_case_report_docx(
             run.font.bold = True
             run.font.size = Pt(9)
             
-        if not variants_list:
+        if not rows_to_add:
             row_cells = table.add_row().cells
             row_cells[0].paragraphs[0].add_run("No variants of this tier selected.")
         else:
-            for v in variants_list:
-                evidence_items = v.get("evidence_json", [])
+            for v, ev in rows_to_add:
+                row_cells = table.add_row().cells
                 
                 gene_name = v.get("gene", "")
                 cdna = v.get("cdna", "")
@@ -1179,66 +1567,53 @@ def download_case_report_docx(
                 else:
                     consequence_clean = "Unknown"
                 
-                def add_exploded_row(ev):
-                    row_cells = table.add_row().cells
-                    
-                    level = "VUS"
-                    biomarker_type = "None"
-                    drug = "None"
-                    response = "None"
-                    evidence_str = "None"
-                    
-                    if ev:
-                        level = ev.get("level", "Level VUS").replace("Level ", "").strip()
-                        biomarker_type = ev.get("biomarker_type", "None").strip()
-                        
-                        # Therapeutic mapping
-                        drug, response = format_therapeutic_response(biomarker_type, ev.get("drug", "None"), ev.get("response", "None"))
-                        
-                        # Evidence EID and PMID
-                        parts = []
-                        if ev.get("source") == "CIViC" and ev.get("eid"):
-                            parts.append(ev.get("eid"))
-                        pmid_val = ev.get("pmids")
-                        if pmid_val and pmid_val != "None":
-                            parts.append(pmid_val)
-                        
-                        evidence_str = f"{parts[0]} ({parts[1]})" if len(parts) > 1 else (parts[0] if parts else "None")
-                    else:
-                        level = v.get("level", "Level VUS").split(" | ")[0].replace("Level ", "").strip()
-                        biomarker_type = v.get("biomarker_type", "None").split(" | ")[0].strip()
-                        
-                        raw_drug = v.get("drug", "None").split(" | ")[0]
-                        raw_resp = v.get("response", "None").split(" | ")[0]
-                        drug, response = format_therapeutic_response(biomarker_type, raw_drug, raw_resp)
-                        
-                        evidence_str = v.get("evidence", "None").split(" | ")[0]
-                    
-                    biomarker_clean = biomarker_type.capitalize()
-                    
-                    for col_idx, val in enumerate([
-                        gene_name, cdna, p_notation, hgvsg, consequence_clean,
-                        level, biomarker_clean, drug, response, evidence_str
-                    ]):
-                        p = row_cells[col_idx].paragraphs[0]
-                        run = p.add_run(val)
-                        run.font.name = 'Arial'
-                        run.font.size = Pt(8.5)
+                level = "VUS"
+                biomarker_type = "None"
+                drug = "None"
+                response = "None"
+                evidence_str = "None"
                 
-                if not evidence_items:
-                    add_exploded_row(None)
+                if ev:
+                    level = ev.get("level", "Level VUS").replace("Level ", "").strip()
+                    biomarker_type = ev.get("biomarker_type", "None").strip()
+                    
+                    # Therapeutic mapping
+                    drug, response = format_therapeutic_response(biomarker_type, ev.get("drug", "None"), ev.get("response", "None"))
+                    
+                    # Evidence EID and PMID
+                    parts = []
+                    if ev.get("source") and "CIViC" in ev.get("source") and ev.get("eid"):
+                        parts.append(ev.get("eid"))
+                    pmid_val = ev.get("pmids")
+                    if pmid_val and pmid_val != "None":
+                        parts.append(pmid_val)
+                    
+                    evidence_str = f"{parts[0]} ({parts[1]})" if len(parts) > 1 else (parts[0] if parts else "None")
                 else:
-                    for ev in evidence_items:
-                        add_exploded_row(ev)
+                    level = v.get("level", "Level VUS").split(" | ")[0].replace("Level ", "").strip()
+                    biomarker_type = v.get("biomarker_type", "None").split(" | ")[0].strip()
+                    
+                    raw_drug = v.get("drug", "None").split(" | ")[0]
+                    raw_resp = v.get("response", "None").split(" | ")[0]
+                    drug, response = format_therapeutic_response(biomarker_type, raw_drug, raw_resp)
+                    
+                    evidence_str = v.get("evidence", "None").split(" | ")[0]
+                
+                biomarker_clean = standardize_biomarker_type(biomarker_type).capitalize()
+                
+                for col_idx, val in enumerate([
+                    gene_name, cdna, p_notation, hgvsg, consequence_clean,
+                    level, biomarker_clean, drug, response, evidence_str
+                ]):
+                    p = row_cells[col_idx].paragraphs[0]
+                    run = p.add_run(val)
+                    run.font.name = 'Arial'
+                    run.font.size = Pt(8.5)
                         
         doc.add_paragraph() # Spacing
 
-    # Group variants
-    tier1_variants = [v for v in confirmed_variants if v.get("tier", "").lower().find("1") != -1]
-    tier2_variants = [v for v in confirmed_variants if v.get("tier", "").lower().find("2") != -1]
-    
-    add_variant_table(doc, "a. Variants of Strong Clinical Significance - Tier 1", tier1_variants)
-    add_variant_table(doc, "b. Variants of Potential Clinical Significance - Tier 2", tier2_variants)
+    add_variant_table(doc, "a. Variants of Strong Clinical Significance - Tier 1", "Tier 1")
+    add_variant_table(doc, "b. Variants of Potential Clinical Significance - Tier 2", "Tier 2")
 
     # Section 3: Detailed Section (LLM generated stuff)
     h3 = doc.add_heading(level=1)
@@ -1372,7 +1747,7 @@ def download_case_report_docx(
                 parse_inline_markdown(p, line)
                 
             i += 1
-            
+
     def group_narratives_by_variant(gene_analysis, variant_narrative, evidence_records):
         import re
         def split_by_variant(text):
@@ -1432,6 +1807,22 @@ def download_case_report_docx(
         cleaned_narratives.get("evidence_records", "")
     )
     
+    # Sort grouped narratives by tier (Tier 1 first, then Tier 2)
+    def get_narrative_sort_key(item):
+        v = find_matching_variant(item["header"], confirmed_variants)
+        if not v:
+            return 99 # Push unmatched to the end
+        v_tier = v.get("tier", "Tier 3").lower()
+        if "tier 1" in v_tier:
+            return 1
+        if "tier 2" in v_tier:
+            return 2
+        if "tier 3" in v_tier:
+            return 3
+        return 4
+        
+    grouped_narratives.sort(key=get_narrative_sort_key)
+    
     if not grouped_narratives:
         p = doc.add_paragraph()
         run_empty = p.add_run("No detailed interpretative narratives are available.")
@@ -1439,12 +1830,14 @@ def download_case_report_docx(
         run_empty.font.size = Pt(10)
     else:
         for item in grouped_narratives:
-            # Variant heading
+            # Variant heading (no variant numbers)
             h_var = doc.add_paragraph()
             h_var.paragraph_format.space_before = Pt(12)
             h_var.paragraph_format.space_after = Pt(4)
             h_var.paragraph_format.keep_with_next = True
-            run_h_var = h_var.add_run(item["header"])
+            
+            cleaned_heading = clean_variant_heading(item["header"])
+            run_h_var = h_var.add_run(cleaned_heading)
             run_h_var.font.name = 'Arial'
             run_h_var.font.bold = True
             run_h_var.font.size = Pt(11.5)
@@ -1483,6 +1876,93 @@ def download_case_report_docx(
             run_lbl_ev.font.name = 'Arial'
             run_lbl_ev.font.bold = True
             run_lbl_ev.font.size = Pt(10)
+            
+            # Find corresponding variant object
+            matched_var = find_matching_variant(item["header"], confirmed_variants)
+            
+            # Determine tier subheading text
+            v_tier = matched_var.get("tier", "Tier 3").lower() if matched_var else "tier 3"
+            if "tier 1" in v_tier:
+                sub_heading_text = "Variants of Strong Clinical Significance"
+            elif "tier 2" in v_tier:
+                sub_heading_text = "Variants of Potential Clinical Significance"
+            else:
+                sub_heading_text = "Variants of Unknown Significance"
+                
+            p_sub = doc.add_paragraph()
+            p_sub.paragraph_format.space_before = Pt(4)
+            p_sub.paragraph_format.space_after = Pt(2)
+            p_sub.paragraph_format.keep_with_next = True
+            run_sub = p_sub.add_run(sub_heading_text)
+            run_sub.font.name = 'Arial'
+            run_sub.font.bold = True
+            run_sub.font.size = Pt(10)
+            run_sub.font.color.rgb = RGBColor(71, 85, 105) # Slate 600
+            
+            # Add compact table
+            table = doc.add_table(rows=1, cols=6)
+            table.style = 'Table Grid'
+            hdr_cells = table.rows[0].cells
+            headers = ["Gene Name", "Mutation", "Tier", "Level", "Biomarker Type", "EID"]
+            for col_idx, h_text in enumerate(headers):
+                p = hdr_cells[col_idx].paragraphs[0]
+                run = p.add_run(h_text)
+                run.font.name = 'Arial'
+                run.font.bold = True
+                run.font.size = Pt(9.5)
+                
+            evidence_items = matched_var.get("evidence_json", []) if matched_var else []
+            if not evidence_items:
+                row_cells = table.add_row().cells
+                gene_name = matched_var.get("gene", "") if matched_var else ""
+                consequence = matched_var.get("consequence", "") if matched_var else ""
+                is_splice = consequence and "splice" in consequence.lower()
+                mutation = (matched_var.get("cdna", "") if is_splice else format_protein_change(matched_var.get("protein", ""), consequence)) if matched_var else ""
+                if matched_var and not mutation:
+                    mutation = matched_var.get("cdna", "") or matched_var.get("protein", "") or "Unknown"
+                
+                tier = matched_var.get("tier", "Tier 3") if matched_var else "Tier 3"
+                level = matched_var.get("level", "Level VUS") if matched_var else "Level VUS"
+                biomarker_type = matched_var.get("biomarker_type", "None") if matched_var else "None"
+                eid = "N/A"
+                
+                biomarker_clean = standardize_biomarker_type(biomarker_type).capitalize()
+                
+                for col_idx, val in enumerate([gene_name, mutation, tier, level, biomarker_clean, eid]):
+                    p = row_cells[col_idx].paragraphs[0]
+                    run = p.add_run(val)
+                    run.font.name = 'Arial'
+                    run.font.size = Pt(9)
+            else:
+                seen_rows = set()
+                for ev in evidence_items:
+                    gene_name = matched_var.get("gene", "") if matched_var else ""
+                    consequence = matched_var.get("consequence", "") if matched_var else ""
+                    is_splice = consequence and "splice" in consequence.lower()
+                    mutation = (matched_var.get("cdna", "") if is_splice else format_protein_change(matched_var.get("protein", ""), consequence)) if matched_var else ""
+                    if matched_var and not mutation:
+                        mutation = matched_var.get("cdna", "") or matched_var.get("protein", "") or "Unknown"
+                    
+                    tier = ev.get("tier", "Tier 3")
+                    level = ev.get("level", "Level VUS")
+                    biomarker_type = ev.get("biomarker_type", "None")
+                    eid = ev.get("eid", "N/A") if ev.get("source") and "CIViC" in ev.get("source") and ev.get("eid") else "N/A"
+                    
+                    biomarker_clean = standardize_biomarker_type(biomarker_type).capitalize()
+                    
+                    row_key = (gene_name, mutation, tier, level, biomarker_clean, eid)
+                    if row_key in seen_rows:
+                        continue
+                    seen_rows.add(row_key)
+                    
+                    row_cells = table.add_row().cells
+                    for col_idx, val in enumerate([gene_name, mutation, tier, level, biomarker_clean, eid]):
+                        p = row_cells[col_idx].paragraphs[0]
+                        run = p.add_run(val)
+                        run.font.name = 'Arial'
+                        run.font.size = Pt(9)
+                        
+            doc.add_paragraph() # space after table
             
             add_markdown_to_docx(doc, item["evidence_summary"] if item["evidence_summary"] else "No evidence summary is available.")
 
