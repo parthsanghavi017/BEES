@@ -13,8 +13,9 @@
 | **Sovereign execution** | All inference via local Ollama (`medgemma:4b`) — zero cloud calls with patient data |
 | **AMP/ASCO/CAP Tiering** | Automated Tier 1–4 classification with disease-specific DOID matching |
 | **CIViC Evidence Integration** | Live + cached evidence via `civicpy` |
+| **Curated Local Evidence** | Encrypted precision oncology knowledge base (included, AES-256) |
 | **DOCX Report Export** | Structured clinical pathology report with split Tier 1/2 tables |
-| **HIPAA / DPDP Act 2023 Compliant** | Audit logging, consent capture, secure deletion, token denylist, no identifiable storage |
+| **HIPAA / DPDP Act 2023 Compliant** | Audit logging, consent capture, secure deletion, token denylist |
 | **Encrypted at rest** | Evidence database uses SQLCipher (AES-256) |
 
 ---
@@ -22,13 +23,12 @@
 ## Architecture
 
 ```
-VCF Upload → Annotation (Jannovar*) → Filtering → Tiering (CIViC + Local DB*)
-    └─→ Curation Grid (browser UI)
-        └─→ Variant Confirmation → LLM Synthesis (Ollama local)
-            └─→ DOCX Report Export
+VCF Upload → Variant Annotation → Impact & gnomAD AF Filtering
+    └─→ Tiering Engine (CIViC + Local Curated DB)
+        └─→ Curation Grid (browser UI)
+            └─→ Variant Confirmation → LLM Synthesis (Ollama local)
+                └─→ DOCX Report Export
 ```
-
-> \* Jannovar annotation databases and the local curated evidence database are not distributed in this repository. See [Setup](#setup) below.
 
 ---
 
@@ -38,12 +38,27 @@ VCF Upload → Annotation (Jannovar*) → Filtering → Tiering (CIViC + Local D
 - [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or Anaconda
 - [Ollama](https://ollama.com/) with `medgemma:4b` pulled
 - Python 3.10+
+- Java 11+ (for the bundled annotation engine)
 
-### Annotation Databases (not included)
+---
 
-BEES uses **Jannovar** for variant annotation. You will need to download the appropriate `.ser` transcript database for your reference genome (GRCh37 or GRCh38) from the [Jannovar releases page](https://github.com/charite/jannovar/releases).
+## What's Included
 
-For gnomAD allele frequency annotation, a bgzipped, tabix-indexed gnomAD VCF is required and configured in `vcfanno`.
+```
+BEES_v2/
+├── app/                        ← FastAPI application (full source)
+├── References/
+│   ├── bees_ensembl_hg38.ser   ← Ensembl transcript annotation database (GRCh38)
+│   ├── bees_refseq_hg38.ser    ← RefSeq transcript annotation database (GRCh38)
+│   ├── Driver-Genes.tsv        ← Cancer driver gene panel
+│   └── af-only-gnomad.hg38.vcf.gz  ← gnomAD population AF reference
+├── Var_DB/
+│   └── clinical_evidence.db    ← AES-256 encrypted curated oncology evidence
+├── bees-annotator.jar          ← Bundled variant annotation engine (Java)
+├── setup_env.sh                ← Environment setup script
+├── create_admin.py             ← Admin user creation utility
+└── .env.example                ← Environment variable template
+```
 
 ---
 
@@ -60,16 +75,24 @@ cd BEES_v2
 
 ```bash
 cp .env.example .env
-# Edit .env and fill in:
-#   SECRET_KEY         — generate with: python -c "import secrets; print(secrets.token_hex(32))"
-#   SQLCIPHER_PASSPHRASE — strong passphrase for the evidence database
-#   CLINICAL_DB_PASSPHRASE — strong passphrase for the case database
+# Edit .env — fill in the three required values:
+#   SECRET_KEY             — generate: python -c "import secrets; print(secrets.token_hex(32))"
+#   SQLCIPHER_PASSPHRASE   — passphrase for Var_DB/clinical_evidence.db
+#   CLINICAL_DB_PASSPHRASE — passphrase for the case database
 ```
 
-> [!IMPORTANT]
-> Never commit your `.env` file. It is listed in `.gitignore`.
+Contact the maintainers for the database passphrases if you are setting up an institutional deployment.
 
-### 3. Run environment setup
+> [!IMPORTANT]
+> Never commit your `.env` file — it is listed in `.gitignore`.
+
+### 3. Verify Java is available
+
+```bash
+java -version   # Must be Java 11 or higher
+```
+
+### 4. Run environment setup
 
 ```bash
 chmod +x setup_env.sh
@@ -79,28 +102,28 @@ chmod +x setup_env.sh
 This will:
 - Detect GPU/Apple Silicon acceleration
 - Verify Ollama is running and pull `medgemma:4b`
-- Create the `clinical_pipeline` conda environment
-- Install all Python dependencies
+- Create the `clinical_pipeline` conda environment and install all Python dependencies
 
-### 4. Start Ollama (if not running as a system service)
+### 5. Start Ollama (if not running as a system service)
 
 ```bash
 ollama serve
 ```
 
-### 5. Create an admin user
+### 6. Create an admin user
 
 ```bash
 conda run -n clinical_pipeline python create_admin.py
 ```
 
-### 6. Start the application server
+### 7. Start the application server
 
 ```bash
 conda run -n clinical_pipeline uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 On startup you will see:
+
 ```
 ============================================================
   BEES — Bioinformatics Evidence Evaluation System
@@ -110,20 +133,17 @@ On startup you will see:
   ✓  Driver genes loaded
   ✓  CIViC cache preloaded
   ✓  Server ready at http://127.0.0.1:8000
-  ✓  API docs at   http://127.0.0.1:8000/docs
 ============================================================
 ```
 
 Open `http://127.0.0.1:8000` in your browser.
 
 > [!NOTE]
-> For clinical deployment, run behind an nginx/caddy reverse proxy with TLS and set `secure=True` on the session cookie.
+> For clinical deployment, run behind an nginx/caddy reverse proxy with TLS enabled.
 
 ---
 
 ## Compliance Controls
-
-BEES implements the following privacy and security controls:
 
 | Control | Implementation |
 |---|---|
@@ -141,12 +161,12 @@ BEES implements the following privacy and security controls:
 
 ## Evidence Sources
 
-BEES integrates evidence from two sources:
+BEES integrates clinical evidence from two sources:
 
 1. **CIViC** (`civicpy`) — open-access clinical interpretations of variants in cancer, fetched and cached locally.
-2. **Local Evidence Database** (`Var_DB/clinical_evidence.db`) — a curated, institution-specific SQLCipher-encrypted precision oncology knowledge base. *Not distributed in this repository.*
+2. **Curated Local Evidence DB** (`Var_DB/clinical_evidence.db`) — an institution-curated, AES-256 encrypted precision oncology knowledge base included with this release.
 
-Gene clinical descriptions are resolved from CIViC first, then from a local encrypted gene description table (16,376 genes). The fallback chain is fully local.
+Gene clinical descriptions are resolved from CIViC first, then from a local encrypted gene description table (16,376 genes). The full fallback chain is local.
 
 ---
 
@@ -154,7 +174,7 @@ Gene clinical descriptions are resolved from CIViC first, then from a local encr
 
 | Tier | Criteria |
 |---|---|
-| **Tier 1A/1B** | Evidence level A or B matching the case's disease DOID |
+| **Tier 1A/1B** | Level A or B evidence matching the case's disease DOID |
 | **Tier 2C** | Tier 1 evidence where disease indication does not match case DOID |
 | **Tier 2D** | Level C evidence (remapped from C) for any indication |
 | **Tier 3** | HIGH/MODERATE impact variant, gnomAD AF < 1%, no evidence (VUS) |
@@ -170,4 +190,4 @@ This project is released for research and educational use. For clinical deployme
 
 ## Contributing
 
-Pull requests are welcome. Please open an issue first to discuss any significant changes. All contributions must maintain the sovereign, privacy-first design principles of this project.
+Pull requests are welcome. Please open an issue first to discuss significant changes. All contributions must maintain the sovereign, privacy-first design principles of this project.

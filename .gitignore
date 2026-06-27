@@ -4,16 +4,15 @@ __pycache__/
 *$py.class
 
 # Databases & local storage
-*.db
+# clinical_pipeline.db is excluded but the encrypted evidence DB is bundled
 *.sqlite
 *.sqlite3
 app/local_storage/vcfs/*
 !app/local_storage/vcfs/.gitkeep
+# Whitelist the bundled encrypted evidence database
+!Var_DB/clinical_evidence.db
 
 # Large clinical reference files & pre-existing databases
-References/
-Var_DB/
-*.jar
 
 # Gene descriptions (ingested into SQLCipher DB via migrate_gene_descriptions.py)
 Gene_Desc/
@@ -37,3 +36,14 @@ venv.bak/
 .vscode/
 .idea/
 .DS_Store
+
+# Large gnomAD reference (too large for git — provide separately)
+References/af-only-gnomad.hg38.vcf.gz
+References/af-only-gnomad.hg38.vcf.gz.tbi
+# Original unbranded .ser files (not distributed)
+References/ensembl_91_hg38.ser
+References/refseq_109_hg38.ser
+# Whitelist BEES-branded annotation engine and databases
+!bees-annotator.jar
+!References/bees_ensembl_hg38.ser
+!References/bees_refseq_hg38.ser

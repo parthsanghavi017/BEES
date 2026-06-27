@@ -198,15 +198,15 @@ def run_variant_pipeline(case_id: int):
         driver_genes_set = load_driver_genes_set()
 
         # 1. Variant Annotation Subprocess
-        # Map transcript database preference to the serialized database file
-        db_ser = "References/ensembl_91_hg38.ser" if case.transcript_db == "Ensembl" else "References/refseq_109_hg38.ser"
+        # Map transcript database preference to the serialized annotation database
+        db_ser = "References/bees_ensembl_hg38.ser" if case.transcript_db == "Ensembl" else "References/bees_refseq_hg38.ser"
         db_ser_path = os.path.join(os.path.dirname(base_dir), db_ser)
-        annotation_jar = os.path.join(os.path.dirname(base_dir), "jannovar-cli-0.36.jar")
+        annotation_jar = os.path.join(os.path.dirname(base_dir), "bees-annotator.jar")
         
         if not os.path.exists(db_ser_path):
             raise FileNotFoundError(f"Annotation database not found at reference path: {db_ser_path}")
         if not os.path.exists(annotation_jar):
-            raise FileNotFoundError(f"Annotation CLI engine not found at reference path: {annotation_jar}")
+            raise FileNotFoundError(f"Annotation engine not found at reference path: {annotation_jar}")
 
         annotation_cmd = [
             "java", "-jar", annotation_jar, "annotate-vcf",
